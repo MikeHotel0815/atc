@@ -1,0 +1,301 @@
+// filepath: src/game/GameEngine.ts
+import type { Airport } from '@/types/airport';
+import type { Aircraft, ATCCommand, ConflictPair } from '@/types/aircraft';
+import type { Waypoint, STAR } from '@/types/navdata';
+import { AircraftManager } from './AircraftManager';
+import { RadarRenderer, DEFAULT_DISPLAY, type DisplayOptions } from './RadarRenderer';
+import { SCORE_LANDING, SCORE_GOAROUND, SCORE_SEPARATION_VIOLATION, SCORE_COLLISION } from './constants';
+
+export interface GameState {
+  score: number;
+  landings: number;
+  violations: number;
+  aircraft: Aircraft[];
+  conflicts: ConflictPair[];
+  selectedId: string | null;
+  paused: boolean;
+  sweepEnabled: boolean;
+  rangeNM: number;
+  trailLength: number;
+  /** aircraftId → queued command types not yet executed (reaction delay) */
+  pendingCmdTypes: Record<string, string[]>;
+  display: DisplayOptions;
+  /** Active landing runway IDs — only these runways' ILS is available (empty = all) */
+  activeRunwayIds: string[];
+}
+
+export { type DisplayOptions };
+
+type StateCallback = (state: GameState) => void;
+
+export interface SessionData {
+  icao: string;
+  savedAt: number;
+  score: number;
+  landings: number;
+  violations: number;
+  rangeNM: number;
+  trailLength: number;
+  sweepEnabled: boolean;
+  viewLat: number;
+  viewLng: number;
+  aircraft: import('@/types/aircraft').Aircraft[];
+  pendingCommands: Array<{ id: string; cmd: import('@/types/aircraft').ATCCommand; remainingMs: number }>;
+}
+
+export class GameEngine {
+  private manager: AircraftManager;
+  private renderer: RadarRenderer | null = null;
+  airport: Airport | null = null;        // public for hit-test in RadarCanvas
+  viewLat = 0;                           // public: view centre (pan target)
+  viewLng = 0;
+  private previewHdg: { aircraftId: string; rawDelta: number } | null = null;
+  private previewAlt: { aircraftId: string; targetAlt: number } | null = null;
+  private waypoints: Waypoint[] = [];
+  private stars: STAR[] = [];
+  private conflicts: ConflictPair[] = [];
+  private state: GameState = {
+    score: 0, landings: 0, violations: 0,
+    aircraft: [], conflicts: [],
+    selectedId: null, paused: false,
+    sweepEnabled: false, rangeNM: 40, trailLength: 6,
+    pendingCmdTypes: {},
+    display: { ...DEFAULT_DISPLAY },
+    activeRunwayIds: [],
+  };
+  get rangeNM(): number { return this.state.rangeNM; }
+  private onStateChange: StateCallback;
+  private rafId: number | null = null;
+  private lastTs: number | null = null;
+  private conflictCooldowns = new Set<string>();
+
+  constructor(onStateChange: StateCallback) {
+    this.onStateChange = onStateChange;
+    this.manager = new AircraftManager();
+
+    this.manager.on((event) => {
+      switch (event.type) {
+        case 'landing':
+          this.state = { ...this.state, score: this.state.score + SCORE_LANDING, landings: this.state.landings + 1 };
+          break;
+        case 'goaround':
+          this.state = { ...this.state, score: this.state.score + SCORE_GOAROUND };
+          break;
+        case 'conflict': {
+          const key = [event.pair!.a, event.pair!.b].sort().join(':');
+          if (!this.conflictCooldowns.has(key)) {
+            this.conflictCooldowns.add(key);
+            const penalty = event.pair!.type === 'conflict' ? SCORE_COLLISION : SCORE_SEPARATION_VIOLATION;
+            this.state = { ...this.state, score: this.state.score + penalty, violations: this.state.violations + 1 };
+            setTimeout(() => this.conflictCooldowns.delete(key), 10000);
+          }
+          const existing = this.conflicts.find((c) => c.a === event.pair!.a && c.b === event.pair!.b);
+          if (!existing) this.conflicts = [...this.conflicts, event.pair!];
+          break;
+        }
+        case 'warning': {
+          const existing = this.conflicts.find((c) => c.a === event.pair!.a && c.b === event.pair!.b);
+          if (!existing) this.conflicts = [...this.conflicts, event.pair!];
+          break;
+        }
+        case 'clear':
+          if (event.pair) {
+            this.conflicts = this.conflicts.filter(
+              (c) => !(c.a === event.pair!.a && c.b === event.pair!.b)
+            );
+          }
+          break;
+      }
+    });
+  }
+
+  attachCanvas(canvas: HTMLCanvasElement): void {
+    this.renderer = new RadarRenderer(canvas);
+  }
+
+  resizeCanvas(w: number, h: number): void {
+    this.renderer?.resize(w, h);
+  }
+
+  setAirport(airport: Airport, waypoints: Waypoint[], stars: STAR[] = []): void {
+    this.airport = airport;
+    this.waypoints = waypoints;
+    this.stars = stars;
+    this.viewLat = airport.lat;
+    this.viewLng = airport.lng;
+    this.manager.setAirport(airport);
+    // Default: all ILS landing runways of the primary direction (lowest heading group)
+    const ilsRunways = airport.runways.filter((r) => r.ils && r.role !== 'departure');
+    const activeRunwayIds = ilsRunways.length > 0
+      ? this.pickPrimaryDirection(ilsRunways).map((r) => r.id)
+      : [];
+    this.state = { ...this.state, activeRunwayIds };
+    for (let i = 0; i < 3; i++) this.manager.forceSpawn();
+  }
+
+  start(): void {
+    if (this.rafId !== null) return;
+    this.lastTs = null;
+    const loop = (ts: number) => {
+      if (this.lastTs === null) this.lastTs = ts;
+      const dt = Math.min((ts - this.lastTs) / 1000, 0.1);
+      this.lastTs = ts;
+
+      if (!this.state.paused) this.manager.update(dt, ts);
+
+      const aircraft = this.manager.getAll();
+      const pendingCmdTypes: Record<string, string[]> = {};
+      for (const ac of aircraft) {
+        const types = this.manager.getPendingTypes(ac.id);
+        if (types.size > 0) pendingCmdTypes[ac.id] = Array.from(types);
+      }
+
+      // Remove conflicts where either aircraft has left the radar
+      this.conflicts = this.conflicts.filter((c) => {
+        return aircraft.some((ac) => ac.id === c.a) && aircraft.some((ac) => ac.id === c.b);
+      });
+
+      this.state = { ...this.state, aircraft, conflicts: this.conflicts, pendingCmdTypes };
+      this.onStateChange(this.state);
+
+      if (this.renderer && this.airport) {
+        this.renderer.render({
+          now: ts,
+          airport: this.airport,
+          aircraft,
+          conflicts: this.conflicts,
+          waypoints: this.waypoints,
+          selectedId: this.state.selectedId,
+          sweepEnabled: this.state.sweepEnabled,
+          rangeNM: this.state.rangeNM,
+          trailLength: this.state.trailLength,
+          viewLat: this.viewLat,
+          viewLng: this.viewLng,
+          previewHeading: this.previewHdg,
+          previewAltitude: this.previewAlt,
+          stars: this.stars,
+          display: this.state.display,
+          activeRunwayIds: this.state.activeRunwayIds,
+        });
+      }
+
+      this.rafId = requestAnimationFrame(loop);
+    };
+    this.rafId = requestAnimationFrame(loop);
+  }
+
+  stop(): void {
+    if (this.rafId !== null) { cancelAnimationFrame(this.rafId); this.rafId = null; }
+  }
+
+  pause():  void { this.state = { ...this.state, paused: true }; }
+  resume(): void { this.state = { ...this.state, paused: false }; }
+
+  setSweep(enabled: boolean): void { this.state = { ...this.state, sweepEnabled: enabled }; }
+  setRange(nm: number):       void { this.state = { ...this.state, rangeNM: Math.max(2, Math.min(200, nm)) }; }
+  setTrailLength(n: number):  void { this.state = { ...this.state, trailLength: n }; }
+
+  adjustRange(factor: number): void {
+    this.setRange(this.state.rangeNM * factor);
+  }
+
+  /** Pan view by NM offsets (dxNM east-positive, dyNM north-positive). */
+  pan(dxNM: number, dyNM: number): void {
+    const cosLat = Math.cos((this.viewLat * Math.PI) / 180);
+    this.viewLat += dyNM / 60;
+    this.viewLng -= dxNM / (60 * cosLat);
+  }
+
+  resetView(): void {
+    if (this.airport) {
+      this.viewLat = this.airport.lat;
+      this.viewLng = this.airport.lng;
+    }
+    this.setRange(40);
+  }
+
+  setPreviewHeading(aircraftId: string | null, rawDelta: number | null): void {
+    this.previewHdg = aircraftId && rawDelta !== null ? { aircraftId, rawDelta } : null;
+  }
+
+  setDisplay(patch: Partial<DisplayOptions>): void {
+    this.state = { ...this.state, display: { ...this.state.display, ...patch } };
+  }
+
+  toggleActiveRunway(id: string): void {
+    const ids = this.state.activeRunwayIds;
+    const next = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
+    this.state = { ...this.state, activeRunwayIds: next };
+  }
+
+  /** Pick all ILS runways whose heading is closest to the median heading of the set. */
+  private pickPrimaryDirection(runways: import('@/types/airport').Runway[]): import('@/types/airport').Runway[] {
+    if (runways.length === 0) return [];
+    // Group by reciprocal pairs: heading vs heading+180
+    // Just pick the group whose heading is smallest (conventional: lower number = primary)
+    const sorted = [...runways].sort((a, b) => a.heading - b.heading);
+    const primaryHdg = sorted[0].heading;
+    // All runways within 20° of the primary heading
+    return runways.filter((r) => Math.abs(r.heading - primaryHdg) < 20);
+  }
+
+  setPreviewAltitude(aircraftId: string | null, targetAlt: number | null): void {
+    this.previewAlt = aircraftId && targetAlt !== null ? { aircraftId, targetAlt } : null;
+  }
+
+  selectAircraft(id: string | null): void { this.state = { ...this.state, selectedId: id }; }
+  applyCommand(id: string, cmd: ATCCommand): void { this.manager.applyCommand(id, cmd); }
+  getSelectedAircraft(): Aircraft | undefined {
+    if (!this.state.selectedId) return undefined;
+    return this.manager.get(this.state.selectedId);
+  }
+
+  private static SESSION_KEY = 'atc-session-v1';
+
+  saveSession(icao: string): void {
+    try {
+      const data = {
+        icao,
+        savedAt: Date.now(),
+        score: this.state.score,
+        landings: this.state.landings,
+        violations: this.state.violations,
+        rangeNM: this.state.rangeNM,
+        trailLength: this.state.trailLength,
+        sweepEnabled: this.state.sweepEnabled,
+        viewLat: this.viewLat,
+        viewLng: this.viewLng,
+        aircraft: this.manager.exportAircraft(),
+        pendingCommands: this.manager.exportPendingCommands(),
+      };
+      localStorage.setItem(GameEngine.SESSION_KEY, JSON.stringify(data));
+    } catch { /* storage unavailable */ }
+  }
+
+  static loadSession(): SessionData | null {
+    try {
+      const raw = localStorage.getItem(GameEngine.SESSION_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw) as SessionData;
+      // Discard sessions older than 4 hours
+      if (Date.now() - data.savedAt > 4 * 60 * 60 * 1000) return null;
+      return data;
+    } catch { return null; }
+  }
+
+  restoreSession(data: SessionData): void {
+    this.state = {
+      ...this.state,
+      score: data.score,
+      landings: data.landings,
+      violations: data.violations,
+      rangeNM: data.rangeNM,
+      trailLength: data.trailLength,
+      sweepEnabled: data.sweepEnabled,
+    };
+    this.viewLat = data.viewLat;
+    this.viewLng = data.viewLng;
+    this.manager.importAircraft(data.aircraft);
+    this.manager.importPendingCommands(data.pendingCommands);
+  }
+}
