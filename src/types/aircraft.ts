@@ -34,6 +34,10 @@ export interface Aircraft {
   warning: boolean;
   /** Forced turn direction for the current heading command; undefined = shortest path */
   turnDirection?: 'left' | 'right';
+  /** Assigned STAR id (from navdata) */
+  starId?: string;
+  /** Index into the STAR's waypoints array — current target leg */
+  starLegIndex?: number;
 }
 
 export interface ConflictPair {

@@ -2,6 +2,7 @@
 import type { Aircraft, TrailPoint } from '@/types/aircraft';
 import type { AircraftState } from '@/types/aircraft';
 import type { Runway } from '@/types/airport';
+import type { STAR } from '@/types/navdata';
 import { turnToHeading, adjustAltitude, adjustSpeed, ktsToNMps, headingDiff, glideslopeAltitude, normaliseHdg } from '@/utils/aviation';
 import { destinationPoint, distanceNM, bearingBetween } from '@/utils/geo';
 import { TRAIL_LENGTH, TRAIL_INTERVAL_MS, AIRCRAFT_TYPES } from './constants';
@@ -14,7 +15,8 @@ export function updateAircraft(
   ac: Aircraft,
   dt: number,
   now: number,
-  runway?: Runway
+  runway?: Runway,
+  star?: STAR,
 ): { updated: Aircraft; remove: boolean } {
   if (ac.state === 'landed') {
     return { updated: ac, remove: true };
@@ -31,6 +33,26 @@ export function updateAircraft(
   let targetAlt = ac.targetAltitude;
   let targetSpd = ac.targetSpeed;
   let turnDirection = ac.turnDirection;
+  let starLegIndex = ac.starLegIndex ?? 0;
+
+  // ── STAR navigation (enroute, not ILS-cleared) ────────────────────────────
+  if (!clearedILS && state === 'enroute' && star && starLegIndex < star.waypoints.length) {
+    const wp = star.waypoints[starLegIndex];
+    const leg = star.legs[starLegIndex];
+    const distToWp = distanceNM(ac.lat, ac.lng, wp.lat, wp.lng);
+
+    targetHdg = Math.round(bearingBetween(ac.lat, ac.lng, wp.lat, wp.lng));
+    if (leg?.altRestrictionFt !== undefined && targetAlt > leg.altRestrictionFt) {
+      targetAlt = leg.altRestrictionFt;
+    }
+    if (leg?.speedRestrictionKts !== undefined && targetSpd > leg.speedRestrictionKts) {
+      targetSpd = leg.speedRestrictionKts;
+    }
+
+    if (distToWp < 1.5) {
+      starLegIndex++;
+    }
+  }
 
   // ── ILS auto-guidance (when cleared ILS) ──────────────────────────────────
   if (clearedILS && runway) {
@@ -86,8 +108,17 @@ export function updateAircraft(
   if (clearedILS && runway) turnDirection = undefined;
 
   headingDeg = turnToHeading(headingDeg, targetHdg, dt, 3, turnDirection);
-  // Clear direction once target is reached
-  if (Math.abs(headingDiff(headingDeg, targetHdg)) < 1) turnDirection = undefined;
+  // Clear forced direction only when the heading has arrived via the forced arc,
+  // not by shortest-path distance (which would prematurely clear a long forced turn).
+  if (turnDirection === 'right') {
+    const remaining = normaliseHdg(targetHdg - headingDeg); // 0..360 clockwise remaining
+    if (remaining < 1 || remaining > 359) turnDirection = undefined;
+  } else if (turnDirection === 'left') {
+    const remaining = normaliseHdg(headingDeg - targetHdg); // 0..360 counter-clockwise remaining
+    if (remaining < 1 || remaining > 359) turnDirection = undefined;
+  } else {
+    if (Math.abs(headingDiff(headingDeg, targetHdg)) < 1) turnDirection = undefined;
+  }
 
   const altResult = adjustAltitude(altitudeFt, targetAlt, dt);
   altitudeFt = altResult.alt;
@@ -130,6 +161,7 @@ export function updateAircraft(
     state,
     trail,
     turnDirection,
+    starLegIndex,
   };
 
   return { updated, remove: state === 'landed' };

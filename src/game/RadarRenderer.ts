@@ -76,7 +76,7 @@ export interface RenderOptions {
   trailLength: number;
   viewLat: number;
   viewLng: number;
-  previewHeading?: { aircraftId: string; rawDelta: number } | null;
+  previewHeading?: { aircraftId: string; targetHdg: number; direction?: 'left' | 'right' } | null;
   previewAltitude?: { aircraftId: string; targetAlt: number } | null;
   stars: STAR[];
   display: DisplayOptions;
@@ -140,9 +140,12 @@ export class RadarRenderer {
     const cLng   = opts.viewLng;
     const ll2c   = this.makeLL2C(cLat, cLng, scale, W, H);
 
+    // Airport canvas position (fixed anchor for rings and sweep)
+    const apPx = ll2c(opts.airport.lat, opts.airport.lng);
+
     // ── Back → Front ────────────────────────────────────────────────────────
-    this.drawRangeRings(opts.rangeNM, scale, W, H);
-    if (opts.sweepEnabled) this.drawSweep(opts.now, W, H);
+    this.drawRangeRings(opts.rangeNM, scale, apPx.x, apPx.y);
+    if (opts.sweepEnabled) this.drawSweep(opts.now, apPx.x, apPx.y);
 
     if (opts.airport.layer) {
       if (opts.rangeNM <= 25) this.drawPolygons(opts.airport.layer.aprons,    ll2c, C.APRON,    C.APRON_BORDER,    0.5);
@@ -156,7 +159,7 @@ export class RadarRenderer {
     if (opts.display.ilsCones) {
       for (const rwy of opts.airport.runways) {
         if (!rwy.ils || rwy.role === 'departure') continue;
-        if (opts.activeRunwayIds.length > 0 && !opts.activeRunwayIds.includes(rwy.id)) continue;
+        if (!opts.activeRunwayIds.includes(rwy.id)) continue;
         this.drawILSCone(rwy, ll2c, opts.rangeNM);
       }
     }
@@ -174,7 +177,7 @@ export class RadarRenderer {
     // Predicted track arc (drawn below aircraft symbols)
     if (opts.previewHeading) {
       const previewAc = opts.aircraft.find((a) => a.id === opts.previewHeading!.aircraftId);
-      if (previewAc) this.drawPredictedTrack(previewAc, opts.previewHeading.rawDelta, ll2c);
+      if (previewAc) this.drawPredictedTrack(previewAc, opts.previewHeading.targetHdg, opts.previewHeading.direction, ll2c);
     }
 
     // Altitude reach circle
@@ -213,7 +216,7 @@ export class RadarRenderer {
   }
 
   // ── Range rings ───────────────────────────────────────────────────────────
-  private drawRangeRings(rangeNM: number, scale: number, W: number, H: number): void {
+  private drawRangeRings(rangeNM: number, scale: number, cx: number, cy: number): void {
     const { ctx } = this;
     const interval = rangeNM <= 4  ? 0.5
                    : rangeNM <= 8  ? 1
@@ -226,24 +229,23 @@ export class RadarRenderer {
     ctx.lineWidth = 1;
     for (let r = interval; r <= rangeNM * 1.5; r += interval) {
       const px = r * scale;
-      if (px > Math.max(W, H)) break;
       ctx.strokeStyle = C.RADAR_RING;
       ctx.beginPath();
-      ctx.arc(W / 2, H / 2, px, 0, Math.PI * 2);
+      ctx.arc(cx, cy, px, 0, Math.PI * 2);
       ctx.stroke();
       ctx.fillStyle = C.RING_LABEL;
       ctx.font = '9px "Courier New"';
       ctx.textAlign = 'left';
-      ctx.fillText(r % 1 === 0 ? `${r}` : r.toFixed(1), W / 2 + px + 2, H / 2 - 2);
+      ctx.fillText(r % 1 === 0 ? `${r}` : r.toFixed(1), cx + px + 2, cy - 2);
     }
     ctx.setLineDash([]);
   }
 
   // ── Sweep ─────────────────────────────────────────────────────────────────
-  private drawSweep(now: number, W: number, H: number): void {
+  private drawSweep(now: number, cx: number, cy: number): void {
     const { ctx } = this;
     const angle  = ((now % SWEEP_PERIOD_MS) / SWEEP_PERIOD_MS) * Math.PI * 2 - Math.PI / 2;
-    const radius = Math.min(W, H) / 2;
+    const radius = Math.hypot(this.cssW, this.cssH);  // cover full canvas from airport
     const trail  = Math.PI * 0.55;
     for (let i = 0; i < 32; i++) {
       const a     = angle - (i / 32) * trail;
@@ -251,15 +253,15 @@ export class RadarRenderer {
       ctx.strokeStyle = C.SWEEP_TRAIL + alpha + ')';
       ctx.lineWidth = 5;
       ctx.beginPath();
-      ctx.moveTo(W / 2, H / 2);
-      ctx.lineTo(W / 2 + Math.cos(a) * radius, H / 2 + Math.sin(a) * radius);
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(a) * radius, cy + Math.sin(a) * radius);
       ctx.stroke();
     }
     ctx.strokeStyle = C.SWEEP;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(W / 2, H / 2);
-    ctx.lineTo(W / 2 + Math.cos(angle) * radius, H / 2 + Math.sin(angle) * radius);
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(angle) * radius, cy + Math.sin(angle) * radius);
     ctx.stroke();
   }
 
@@ -631,19 +633,26 @@ export class RadarRenderer {
   // ── Predicted turn arc ───────────────────────────────────────────────────
   private drawPredictedTrack(
     ac: Aircraft,
-    rawDelta: number,
+    targetHdg: number,
+    direction: 'left' | 'right' | undefined,
     ll2c: (lat: number, lng: number) => { x: number; y: number }
   ): void {
     const { ctx } = this;
 
-    // rawDelta: accumulated scroll (positive = right turn, negative = left turn)
-    // Clamp to ±360°; ignore trivial changes
-    const delta = Math.max(-360, Math.min(360, rawDelta));
+    // Compute signed delta from current heading to fixed target, respecting direction
+    let delta: number;
+    if (direction === 'right') {
+      delta = ((targetHdg - ac.headingDeg) % 360 + 360) % 360 || 360;
+    } else if (direction === 'left') {
+      const cw = ((targetHdg - ac.headingDeg) % 360 + 360) % 360;
+      delta = cw === 0 ? 0 : -(360 - cw);
+    } else {
+      // shortest path
+      delta = ((targetHdg - ac.headingDeg + 540) % 360) - 180;
+    }
+    delta = Math.max(-360, Math.min(360, delta));
     const absAngle = Math.abs(delta);
     const isRight = delta >= 0;
-
-    // Compute target heading from rawDelta (for continuation line direction)
-    const targetHdg = ((ac.headingDeg + delta) % 360 + 360) % 360 || 360;
 
     // Turn radius: r = V/ω, standard rate 3°/s
     const radiusNM = (ac.speedKts / 3600) / (3 * Math.PI / 180);

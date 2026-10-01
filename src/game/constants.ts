@@ -4,7 +4,7 @@ export const SEP_VERTICAL_FT = 1000;
 export const WARN_LATERAL_NM = 5;
 export const WARN_VERTICAL_FT = 2000;
 
-export const RADAR_RANGE_NM = 40;
+export const RADAR_RANGE_NM = 80;
 export const SWEEP_PERIOD_MS = 4000;
 export const TRAIL_LENGTH = 8;
 export const TRAIL_INTERVAL_MS = 5000;
@@ -22,8 +22,8 @@ export const ACCEL_KTS_S = 5;
 // Spawn config
 export const SPAWN_INTERVAL_MIN_S = 45;
 export const SPAWN_INTERVAL_MAX_S = 90;
-export const SPAWN_DISTANCE_NM = 30;
-export const MAX_AIRCRAFT = 10;
+export const SPAWN_DISTANCE_NM = 70;
+export const MAX_AIRCRAFT = 12;
 
 // Score
 export const SCORE_LANDING = 100;
