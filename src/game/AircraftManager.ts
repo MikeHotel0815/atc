@@ -1,9 +1,10 @@
 // filepath: src/game/AircraftManager.ts
 import type { Aircraft, ATCCommand, ConflictPair } from '@/types/aircraft';
 import type { Airport } from '@/types/airport';
+import type { STAR } from '@/types/navdata';
 import { createAircraft, updateAircraft } from './Aircraft';
-import { distanceNM } from '@/utils/geo';
-import { destinationPoint } from '@/utils/geo';
+import { distanceNM, destinationPoint, bearingBetween } from '@/utils/geo';
+import { normaliseHdg } from '@/utils/aviation';
 import {
   SEP_LATERAL_NM, SEP_VERTICAL_FT,
   WARN_LATERAL_NM, WARN_VERTICAL_FT,
@@ -18,10 +19,11 @@ type EventHandler = (event: { type: EventType; callsign?: string; pair?: Conflic
 export class AircraftManager {
   private aircraft: Map<string, Aircraft> = new Map();
   private airport: Airport | null = null;
+  private stars: STAR[] = [];
   private listeners: EventHandler[] = [];
   private nextSpawnIn: number;
   private usedCallsigns = new Set<string>();
-  // ATC reaction delay: pilot reads back, then acts (5–12 s)
+  // ATC reaction delay: pilot reads back, then acts (1–3 s)
   private pendingCommands: Array<{ id: string; cmd: ATCCommand; executeAt: number }> = [];
   // Track active conflict/warning pairs to emit clear on resolution
   private activePairs = new Map<string, 'conflict' | 'warning'>(); // key: sorted ids
@@ -37,8 +39,9 @@ export class AircraftManager {
     );
   }
 
-  setAirport(airport: Airport): void {
+  setAirport(airport: Airport, stars: STAR[] = []): void {
     this.airport = airport;
+    this.stars = stars;
   }
 
   on(handler: EventHandler): void {
@@ -57,9 +60,9 @@ export class AircraftManager {
     return this.aircraft.get(id);
   }
 
-  applyCommand(id: string, cmd: ATCCommand): void {
-    // Queue with realistic pilot reaction delay (5–12 s)
-    const delaySec = 5 + Math.random() * 7;
+  applyCommand(id: string, cmd: ATCCommand, timeScale = 1): void {
+    // Queue with pilot reaction delay (1–3 s), scaled by simulation speed
+    const delaySec = (1 + Math.random() * 2) / timeScale;
     this.pendingCommands.push({ id, cmd, executeAt: performance.now() + delaySec * 1000 });
   }
 
@@ -114,7 +117,8 @@ export class AircraftManager {
       const runway = ac.assignedRunway
         ? this.airport.runways.find((r) => r.id === ac.assignedRunway)
         : undefined;
-      const { updated, remove } = updateAircraft(ac, dt, now, runway);
+      const star = ac.starId ? this.stars.find((s) => s.id === ac.starId) : undefined;
+      const { updated, remove } = updateAircraft(ac, dt, now, runway, star);
       if (remove) {
         this.aircraft.delete(id);
         // Clean up activePairs for removed aircraft
@@ -201,8 +205,38 @@ export class AircraftManager {
     const type = types[Math.floor(Math.random() * types.length)];
     const typeData = AIRCRAFT_TYPES[type];
     const callsign = this.generateCallsign();
-    const { lat, lng } = this.randomEntryPoint();
     const id = `${callsign}-${Date.now()}`;
+
+    let lat: number, lng: number, initHdg: number;
+    let starId: string | undefined;
+    const starLegIndex = 0;
+
+    if (this.stars.length > 0) {
+      // Pick a random STAR and spawn 15–20 NM before its entry fix
+      const star = this.stars[Math.floor(Math.random() * this.stars.length)];
+      const entryFix = star.waypoints[0];
+      const nextFix = star.waypoints[1] ?? { lat: this.airport.lat, lng: this.airport.lng };
+      // Inbound track: entry → next; spawn on reciprocal (behind the fix)
+      const inboundBearing = bearingBetween(entryFix.lat, entryFix.lng, nextFix.lat, nextFix.lng);
+      const spawnDist = 15 + Math.random() * 5;
+      const spawnPos = destinationPoint(entryFix.lat, entryFix.lng, normaliseHdg(inboundBearing + 180), spawnDist);
+      lat = spawnPos.lat;
+      lng = spawnPos.lng;
+      initHdg = Math.round(bearingBetween(lat, lng, entryFix.lat, entryFix.lng));
+      starId = star.id;
+    } else {
+      const pos = this.randomEntryPoint();
+      lat = pos.lat;
+      lng = pos.lng;
+      initHdg = Math.round(bearingBetween(lat, lng, this.airport.lat, this.airport.lng));
+    }
+
+    // Altitude: at or above first STAR leg restriction (or random FL100–FL180)
+    const star = this.stars.find((s) => s.id === starId);
+    const firstAltRestr = star?.legs[0]?.altRestrictionFt;
+    const initAlt = firstAltRestr
+      ? Math.max(firstAltRestr, firstAltRestr + Math.floor(Math.random() * 2000))
+      : 10000 + Math.floor(Math.random() * 8000);
 
     const ac = createAircraft({
       id,
@@ -210,15 +244,17 @@ export class AircraftManager {
       type,
       lat,
       lng,
-      altitudeFt: 8000 + Math.floor(Math.random() * 4000),
-      headingDeg: Math.floor(Math.random() * 360),
+      altitudeFt: initAlt,
+      headingDeg: initHdg,
       speedKts: typeData.cruiseKts,
       verticalSpeedFpm: 0,
-      targetHeading: Math.floor(Math.random() * 360),
-      targetAltitude: 8000 + Math.floor(Math.random() * 4000),
+      targetHeading: initHdg,
+      targetAltitude: initAlt,
       targetSpeed: typeData.cruiseKts,
       state: 'enroute',
       clearedILS: false,
+      starId,
+      starLegIndex,
     });
 
     this.aircraft.set(id, ac);
@@ -226,15 +262,9 @@ export class AircraftManager {
 
   private randomEntryPoint(): { lat: number; lng: number } {
     if (!this.airport) return { lat: 0, lng: 0 };
-    // Spawn on one of 4 cardinal gates
-    const bearings = [0, 90, 180, 270];
-    const bearing = bearings[Math.floor(Math.random() * bearings.length)];
-    const offset = (Math.random() - 0.5) * 20; // ±10° variation
-    return destinationPoint(
-      this.airport.lat, this.airport.lng,
-      bearing + offset,
-      SPAWN_DISTANCE_NM
-    );
+    const bearing = Math.random() * 360;
+    const dist = SPAWN_DISTANCE_NM * (0.55 + Math.random() * 0.45);
+    return destinationPoint(this.airport.lat, this.airport.lng, bearing, dist);
   }
 
   private generateCallsign(): string {

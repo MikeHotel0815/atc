@@ -1,16 +1,20 @@
 // filepath: src/ui/ScorePanel.tsx
+const TIME_SCALES = [1, 2, 4, 8] as const;
+
 interface Props {
   score: number;
   landings: number;
   violations: number;
   paused: boolean;
+  timeScale: number;
   sweepEnabled: boolean;
   onPause: () => void;
   onResume: () => void;
   onToggleSweep: () => void;
+  onTimeScale: (s: number) => void;
 }
 
-export function ScorePanel({ score, landings, violations, paused, sweepEnabled, onPause, onResume, onToggleSweep }: Props) {
+export function ScorePanel({ score, landings, violations, paused, timeScale, sweepEnabled, onPause, onResume, onToggleSweep, onTimeScale }: Props) {
   return (
     <div style={{ borderTop: '1px solid #1a3a1a', paddingTop: 8 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, gap: 4 }}>
@@ -45,6 +49,27 @@ export function ScorePanel({ score, landings, violations, paused, sweepEnabled, 
         >
           {paused ? '▶' : '⏸'}
         </button>
+      </div>
+      <div style={{ display: 'flex', gap: 3, marginBottom: 6 }}>
+        {TIME_SCALES.map((s) => (
+          <button
+            key={s}
+            onClick={() => onTimeScale(s)}
+            style={{
+              flex: 1,
+              background: timeScale === s ? '#0a3020' : 'transparent',
+              border: `1px solid ${timeScale === s ? '#00cc66' : '#335533'}`,
+              color: timeScale === s ? '#00ff88' : '#446644',
+              fontFamily: '"Courier New", monospace',
+              fontSize: 10,
+              padding: '3px 0',
+              cursor: 'pointer',
+              borderRadius: 2,
+            }}
+          >
+            {s}x
+          </button>
+        ))}
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 4 }}>
         <Stat label="SCORE" value={score.toString()} color={score >= 0 ? '#00ff88' : '#ff3333'} />

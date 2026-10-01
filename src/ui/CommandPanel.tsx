@@ -57,9 +57,14 @@ export function CommandPanel({ selected, airport, onCommand }: Props) {
   }
 
   const sendHdg = () => {
-    const v = parseInt(hdg, 10);
+    const raw = hdg.trim().toLowerCase();
+    let dir: 'left' | 'right' | undefined;
+    let digits = raw;
+    if (raw.startsWith('r')) { dir = 'right'; digits = raw.slice(1); }
+    else if (raw.startsWith('l')) { dir = 'left';  digits = raw.slice(1); }
+    const v = parseInt(digits, 10);
     if (v >= 1 && v <= 360) {
-      onCommand(selected.id, { type: 'heading', value: v });
+      onCommand(selected.id, { type: 'heading', value: v, turnDirection: dir });
       setHdg('');
     }
   };
@@ -97,16 +102,21 @@ export function CommandPanel({ selected, airport, onCommand }: Props) {
 
       {/* Heading */}
       <div>
-        <label style={LABEL_STYLE}>HEADING (1-360)</label>
+        <label style={LABEL_STYLE}>
+          HEADING&nbsp;&nbsp;
+          <span style={{ color: '#00ff88' }}>{String(Math.round(selected.headingDeg)).padStart(3, '0')}°</span>
+          {Math.abs(selected.targetHeading - Math.round(selected.headingDeg)) > 1 && (
+            <span style={{ color: '#ffaa00' }}> ({String(selected.targetHeading).padStart(3, '0')}°)</span>
+          )}
+        </label>
         <div style={{ display: 'flex', gap: 4 }}>
           <input
-            type="number" min={1} max={360}
+            type="text"
             value={hdg}
             onChange={(e) => setHdg(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && sendHdg()}
-            placeholder={`${Math.round(selected.headingDeg)}°`}
+            placeholder="090 · r090 · l090"
             style={{ ...INPUT_STYLE, flex: 1 }}
-            inputMode="numeric"
           />
           <button onClick={sendHdg} style={{ ...BTN_STYLE, width: 40, marginTop: 0 }}>HDG</button>
         </div>
@@ -114,7 +124,13 @@ export function CommandPanel({ selected, airport, onCommand }: Props) {
 
       {/* Altitude */}
       <div>
-        <label style={LABEL_STYLE}>ALTITUDE (ft or FL)</label>
+        <label style={LABEL_STYLE}>
+          ALTITUDE&nbsp;&nbsp;
+          <span style={{ color: '#00ff88' }}>FL{Math.round(selected.altitudeFt / 100).toString().padStart(3, '0')}</span>
+          {Math.abs(selected.targetAltitude - selected.altitudeFt) > 50 && (
+            <span style={{ color: '#ffaa00' }}> (FL{Math.round(selected.targetAltitude / 100).toString().padStart(3, '0')})</span>
+          )}
+        </label>
         <div style={{ display: 'flex', gap: 4 }}>
           <input
             type="text"
@@ -131,7 +147,13 @@ export function CommandPanel({ selected, airport, onCommand }: Props) {
 
       {/* Speed */}
       <div>
-        <label style={LABEL_STYLE}>SPEED (kts)</label>
+        <label style={LABEL_STYLE}>
+          SPEED&nbsp;&nbsp;
+          <span style={{ color: '#00ff88' }}>{Math.round(selected.speedKts)}kt</span>
+          {Math.abs(selected.targetSpeed - selected.speedKts) > 2 && (
+            <span style={{ color: '#ffaa00' }}> ({Math.round(selected.targetSpeed)}kt)</span>
+          )}
+        </label>
         <div style={{ display: 'flex', gap: 4 }}>
           <input
             type="number" min={80} max={350}

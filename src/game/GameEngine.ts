@@ -14,6 +14,7 @@ export interface GameState {
   conflicts: ConflictPair[];
   selectedId: string | null;
   paused: boolean;
+  timeScale: number;
   sweepEnabled: boolean;
   rangeNM: number;
   trailLength: number;
@@ -37,6 +38,9 @@ export interface SessionData {
   rangeNM: number;
   trailLength: number;
   sweepEnabled: boolean;
+  timeScale: number;
+  display: DisplayOptions;
+  activeRunwayIds: string[];
   viewLat: number;
   viewLng: number;
   aircraft: import('@/types/aircraft').Aircraft[];
@@ -49,7 +53,8 @@ export class GameEngine {
   airport: Airport | null = null;        // public for hit-test in RadarCanvas
   viewLat = 0;                           // public: view centre (pan target)
   viewLng = 0;
-  private previewHdg: { aircraftId: string; rawDelta: number } | null = null;
+  private currentIcao = '';
+  private previewHdg: { aircraftId: string; targetHdg: number; direction?: 'left' | 'right' } | null = null;
   private previewAlt: { aircraftId: string; targetAlt: number } | null = null;
   private waypoints: Waypoint[] = [];
   private stars: STAR[] = [];
@@ -57,8 +62,8 @@ export class GameEngine {
   private state: GameState = {
     score: 0, landings: 0, violations: 0,
     aircraft: [], conflicts: [],
-    selectedId: null, paused: false,
-    sweepEnabled: false, rangeNM: 40, trailLength: 6,
+    selectedId: null, paused: false, timeScale: 1,
+    sweepEnabled: false, rangeNM: 80, trailLength: 6,
     pendingCmdTypes: {},
     display: { ...DEFAULT_DISPLAY },
     activeRunwayIds: [],
@@ -118,12 +123,13 @@ export class GameEngine {
   }
 
   setAirport(airport: Airport, waypoints: Waypoint[], stars: STAR[] = []): void {
+    this.currentIcao = airport.icao;
     this.airport = airport;
     this.waypoints = waypoints;
     this.stars = stars;
     this.viewLat = airport.lat;
     this.viewLng = airport.lng;
-    this.manager.setAirport(airport);
+    this.manager.setAirport(airport, stars);
     // Default: all ILS landing runways of the primary direction (lowest heading group)
     const ilsRunways = airport.runways.filter((r) => r.ils && r.role !== 'departure');
     const activeRunwayIds = ilsRunways.length > 0
@@ -141,7 +147,7 @@ export class GameEngine {
       const dt = Math.min((ts - this.lastTs) / 1000, 0.1);
       this.lastTs = ts;
 
-      if (!this.state.paused) this.manager.update(dt, ts);
+      if (!this.state.paused) this.manager.update(dt * this.state.timeScale, ts);
 
       const aircraft = this.manager.getAll();
       const pendingCmdTypes: Record<string, string[]> = {};
@@ -190,10 +196,14 @@ export class GameEngine {
 
   pause():  void { this.state = { ...this.state, paused: true }; }
   resume(): void { this.state = { ...this.state, paused: false }; }
+  setTimeScale(s: number):    void { this.state = { ...this.state, timeScale: s };                                    this.trySave(); }
+  setSweep(enabled: boolean): void { this.state = { ...this.state, sweepEnabled: enabled };                          this.trySave(); }
+  setRange(nm: number):       void { this.state = { ...this.state, rangeNM: Math.max(2, Math.min(200, nm)) };        this.trySave(); }
+  setTrailLength(n: number):  void { this.state = { ...this.state, trailLength: n };                                 this.trySave(); }
 
-  setSweep(enabled: boolean): void { this.state = { ...this.state, sweepEnabled: enabled }; }
-  setRange(nm: number):       void { this.state = { ...this.state, rangeNM: Math.max(2, Math.min(200, nm)) }; }
-  setTrailLength(n: number):  void { this.state = { ...this.state, trailLength: n }; }
+  private trySave(): void {
+    if (this.currentIcao) this.saveSession(this.currentIcao);
+  }
 
   adjustRange(factor: number): void {
     this.setRange(this.state.rangeNM * factor);
@@ -211,21 +221,23 @@ export class GameEngine {
       this.viewLat = this.airport.lat;
       this.viewLng = this.airport.lng;
     }
-    this.setRange(40);
+    this.setRange(80);
   }
 
-  setPreviewHeading(aircraftId: string | null, rawDelta: number | null): void {
-    this.previewHdg = aircraftId && rawDelta !== null ? { aircraftId, rawDelta } : null;
+  setPreviewHeading(aircraftId: string | null, targetHdg: number | null, direction?: 'left' | 'right'): void {
+    this.previewHdg = aircraftId && targetHdg !== null ? { aircraftId, targetHdg, direction } : null;
   }
 
   setDisplay(patch: Partial<DisplayOptions>): void {
     this.state = { ...this.state, display: { ...this.state.display, ...patch } };
+    this.trySave();
   }
 
   toggleActiveRunway(id: string): void {
     const ids = this.state.activeRunwayIds;
     const next = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
     this.state = { ...this.state, activeRunwayIds: next };
+    this.trySave();
   }
 
   /** Pick all ILS runways whose heading is closest to the median heading of the set. */
@@ -244,7 +256,7 @@ export class GameEngine {
   }
 
   selectAircraft(id: string | null): void { this.state = { ...this.state, selectedId: id }; }
-  applyCommand(id: string, cmd: ATCCommand): void { this.manager.applyCommand(id, cmd); }
+  applyCommand(id: string, cmd: ATCCommand): void { this.manager.applyCommand(id, cmd, this.state.timeScale); }
   getSelectedAircraft(): Aircraft | undefined {
     if (!this.state.selectedId) return undefined;
     return this.manager.get(this.state.selectedId);
@@ -263,6 +275,9 @@ export class GameEngine {
         rangeNM: this.state.rangeNM,
         trailLength: this.state.trailLength,
         sweepEnabled: this.state.sweepEnabled,
+        timeScale: this.state.timeScale,
+        display: this.state.display,
+        activeRunwayIds: this.state.activeRunwayIds,
         viewLat: this.viewLat,
         viewLng: this.viewLng,
         aircraft: this.manager.exportAircraft(),
@@ -292,6 +307,9 @@ export class GameEngine {
       rangeNM: data.rangeNM,
       trailLength: data.trailLength,
       sweepEnabled: data.sweepEnabled,
+      timeScale: data.timeScale ?? 1,
+      display: data.display ?? { ...DEFAULT_DISPLAY },
+      activeRunwayIds: data.activeRunwayIds ?? [],
     };
     this.viewLat = data.viewLat;
     this.viewLng = data.viewLng;

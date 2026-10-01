@@ -17,7 +17,7 @@ interface Props {
   airport: Airport | null;
   onCommand: (id: string, cmd: ATCCommand) => void;
   onClose: () => void;
-  onHeadingPreview?: (aircraftId: string, hdg: number | null) => void;
+  onHeadingPreview?: (aircraftId: string, hdg: number | null, direction?: 'left' | 'right') => void;
   onAltitudePreview?: (aircraftId: string, alt: number | null) => void;
   pendingCmdTypes?: string[];   // command types queued but not yet executed
   activeRunwayIds?: string[];
@@ -80,16 +80,7 @@ export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPrevie
   useEffect(() => {
     const hdgDiff = Math.abs(headingDiff(ac.headingDeg, ac.targetHeading));
     if (hdgDiff > 2) {
-      let rawDelta: number;
-      if (ac.turnDirection === 'right') {
-        rawDelta = normaliseHdg(ac.targetHeading - ac.headingDeg);       // 0–360 clockwise
-      } else if (ac.turnDirection === 'left') {
-        const cw = normaliseHdg(ac.targetHeading - ac.headingDeg);
-        rawDelta = -(360 - cw);                                           // negative = counter-clockwise
-      } else {
-        rawDelta = headingDiff(ac.headingDeg, ac.targetHeading);          // shortest path
-      }
-      onHeadingPreview?.(ac.id, rawDelta);
+      onHeadingPreview?.(ac.id, ac.targetHeading, ac.turnDirection);
     }
     if (Math.abs(ac.altitudeFt - ac.targetAltitude) > 100) {
       onAltitudePreview?.(ac.id, ac.targetAltitude);
@@ -107,7 +98,7 @@ export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPrevie
 
   const ilsRunways = airport?.runways.filter((rwy) => {
     if (!rwy.ils) return false;
-    if (activeRunwayIds.length > 0 && !activeRunwayIds.includes(rwy.id)) return false;
+    if (!activeRunwayIds.includes(rwy.id)) return false;
     return getILSStatusForRunway(ac, rwy).canIntercept;
   }) ?? [];
 
@@ -147,7 +138,12 @@ export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPrevie
         format={(v) => `${String(v).padStart(3, '0')}°`}
         unit="HDG"
         onSend={(v, dir) => cmd({ type: 'heading', value: v, turnDirection: dir })}
-        onPreviewDelta={(d) => onHeadingPreview?.(ac.id, d)}
+        onPreviewDelta={(d) => {
+          if (d === null) { onHeadingPreview?.(ac.id, null); return; }
+          const absHdg = normaliseHdg(Math.round(ac.headingDeg) + d);
+          const dir = d > 0 ? 'right' : d < 0 ? 'left' : undefined;
+          onHeadingPreview?.(ac.id, absHdg, dir);
+        }}
       />
       <div style={{ display: 'flex' }}>
         {([-30, -90, 90, 30] as const).map((delta) => (
@@ -228,13 +224,26 @@ export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPrevie
       </div>
 
       {/* ── ILS ── */}
-      {ilsRunways.length > 0 && (
+      {(ac.clearedILS || ilsRunways.length > 0 || pendingCmdTypes.includes('ils')) && (
         <>
-          <div style={SECTION_STYLE}>ILS APPROACH</div>
+          <div style={SECTION_STYLE}>
+            ILS APPROACH
+            {(ac.clearedILS || pendingCmdTypes.includes('ils')) && (
+              <span style={{ float: 'right', fontSize: 10, fontWeight: 'normal', letterSpacing: 0,
+                color: pendingCmdTypes.includes('ils') ? '#ffaa00' : '#00cc66' }}>
+                {pendingCmdTypes.includes('ils') ? '⧖ ' : ''}
+                {ac.assignedRunway ? `RWY ${ac.assignedRunway}` : ''}
+                {!pendingCmdTypes.includes('ils') && ac.clearedILS ? ' ✓' : ''}
+              </span>
+            )}
+          </div>
           {ilsRunways.map((rwy) => (
             <HoverItem key={rwy.id} style={ITEM_STYLE} hoverBg={ITEM_HOVER}
               onClick={() => cmd({ type: 'ils', runwayId: rwy.id })}>
               <span>Cleared ILS RWY {rwy.id}</span>
+              {ac.clearedILS && ac.assignedRunway === rwy.id && (
+                <span style={{ color: '#00cc66', fontSize: 10 }}>ACTIVE</span>
+              )}
             </HoverItem>
           ))}
         </>
@@ -311,13 +320,21 @@ function ScrollableValue({ initial, step, stepShift, min, max, wrap, format, uni
     }
   }, [active]);
 
+  // Scroll wheel: activate on first scroll, then adjust
   useEffect(() => {
-    if (!active) return;
     const el = ref.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       e.stopPropagation();
+      if (!active) {
+        // Auto-activate from current initial value (reset state to initial first)
+        rawDeltaRef.current = 0;
+        setValue(initial);
+        setActive(true);
+        onPreviewRef.current?.(initial);
+        onPreviewDeltaRef.current?.(0);
+      }
       const s = e.shiftKey ? stepShift : step;
       const d = e.deltaY > 0 ? -s : s;
       rawDeltaRef.current += d;
@@ -330,7 +347,23 @@ function ScrollableValue({ initial, step, stepShift, min, max, wrap, format, uni
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [active, step, stepShift, min, max, wrap]);
+  }, [active, initial, step, stepShift, min, max, wrap]);
+
+  // ENTER key sends the value when active
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      e.stopPropagation();
+      onPreviewRef.current?.(null);
+      onPreviewDeltaRef.current?.(null);
+      const dir = rawDeltaRef.current > 0 ? 'right' : rawDeltaRef.current < 0 ? 'left' : undefined;
+      onSend(value, dir);
+    };
+    document.addEventListener('keydown', onKey, { capture: true });
+    return () => document.removeEventListener('keydown', onKey, { capture: true });
+  }, [active, value, onSend]);
 
   return (
     <div

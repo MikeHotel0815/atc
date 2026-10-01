@@ -14,7 +14,7 @@ import { ContextMenu, type ContextMenuState } from './ContextMenu';
 
 const SIDEBAR_W = 288;
 const MOBILE_BREAKPOINT = 700;
-const RANGE_PRESETS = [5, 10, 20, 40, 80];
+const RANGE_PRESETS = [10, 20, 40, 80, 120];
 
 export function App() {
   const engineRef = useRef<GameEngine | null>(null);
@@ -23,7 +23,7 @@ export function App() {
   const [gameState, setGameState] = useState<GameState>({
     score: 0, landings: 0, violations: 0,
     aircraft: [], conflicts: [], selectedId: null,
-    paused: false, sweepEnabled: false, rangeNM: 40, trailLength: 6,
+    paused: false, timeScale: 1, sweepEnabled: false, rangeNM: 80, trailLength: 6,
     pendingCmdTypes: {}, display: { ...DEFAULT_DISPLAY },
     activeRunwayIds: [],
   });
@@ -84,8 +84,8 @@ export function App() {
     engineRef.current?.selectAircraft(ac.id);
   }, []);
 
-  const handleHeadingPreview = useCallback((aircraftId: string, rawDelta: number | null) => {
-    engineRef.current?.setPreviewHeading(rawDelta !== null ? aircraftId : null, rawDelta);
+  const handleHeadingPreview = useCallback((aircraftId: string, targetHdg: number | null, direction?: 'left' | 'right') => {
+    engineRef.current?.setPreviewHeading(targetHdg !== null ? aircraftId : null, targetHdg, direction);
   }, []);
 
   const handleAltitudePreview = useCallback((aircraftId: string, alt: number | null) => {
@@ -226,10 +226,11 @@ export function App() {
       {/* Score / controls */}
       <ScorePanel
         score={gameState.score} landings={gameState.landings} violations={gameState.violations}
-        paused={gameState.paused} sweepEnabled={gameState.sweepEnabled}
+        paused={gameState.paused} timeScale={gameState.timeScale} sweepEnabled={gameState.sweepEnabled}
         onPause={() => engineRef.current?.pause()}
         onResume={() => engineRef.current?.resume()}
         onToggleSweep={() => engineRef.current?.setSweep(!gameState.sweepEnabled)}
+        onTimeScale={(s) => engineRef.current?.setTimeScale(s)}
       />
     </div>
   );
