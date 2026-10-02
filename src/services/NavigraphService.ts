@@ -131,10 +131,30 @@ export interface NavDataResponse {
   stars: STAR[];
 }
 
+const KEY_STORAGE = 'atc-navdata-key';
+
+/** Schlüssel für die private Navdata-Route: einmal per ?navkey=… aufrufen, danach im Browser gespeichert */
+function navdataKey(): string {
+  try {
+    const url = new URL(window.location.href);
+    const fromUrl = url.searchParams.get('navkey');
+    if (fromUrl) {
+      localStorage.setItem(KEY_STORAGE, fromUrl);
+      url.searchParams.delete('navkey');
+      window.history.replaceState(null, '', url);
+    }
+    return localStorage.getItem(KEY_STORAGE) ?? '';
+  } catch {
+    return '';
+  }
+}
+
 /** Navigraph-AIRAC-Daten vom Server; null, wenn nicht installiert oder Flughafen unbekannt */
 export async function fetchNavData(icao: string): Promise<NavDataResponse | null> {
   try {
-    const res = await fetch(`${import.meta.env.BASE_URL}api/navdata/${icao.toUpperCase()}`);
+    const res = await fetch(`${import.meta.env.BASE_URL}api/navdata/${icao.toUpperCase()}`, {
+      headers: { 'X-Navdata-Key': navdataKey() },
+    });
     if (!res.ok) return null;
     return await res.json() as NavDataResponse;
   } catch {

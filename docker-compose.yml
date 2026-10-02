@@ -41,6 +41,8 @@ services:
       HOST: 0.0.0.0
       TZ: Europe/Berlin
       NAVDATA_DB: /app/data/navdata/little_navmap_navigraph.sqlite
+      # Privater Schlüssel für /api/navdata (in .env setzen, nicht committen)
+      NAVDATA_KEY: ${NAVDATA_KEY:-}
     volumes:
       # Navigraph-AIRAC-DB (lizenziert, nicht im Repo) – siehe scripts/extract-navdata.sh
       - ./data/navdata:/app/data/navdata:ro

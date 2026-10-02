@@ -17,6 +17,9 @@ const NAVAID_RADIUS_NM = 50;
 // Anflugsektor: STARs beginnen frühestens so weit vom Platz entfernt
 const STAR_MAX_ENTRY_NM = 40;
 
+// Privater Zugang: ohne passenden Schlüssel liefert die Route nichts (Lizenz: nur Eigennutzung)
+const NAVDATA_KEY = process.env.NAVDATA_KEY ?? '';
+
 let db: DatabaseSync | null = null;
 let cycle: string | null = null;
 
@@ -210,6 +213,14 @@ function loadNavaids(d: DatabaseSync, lat: number, lng: number, out: Map<string,
 }
 
 // ── Routes ───────────────────────────────────────────────────────────────────
+router.use((req, res, next) => {
+  if (NAVDATA_KEY && req.get('X-Navdata-Key') !== NAVDATA_KEY) {
+    res.status(401).json({ error: 'Kein Zugriff auf Navdata' });
+    return;
+  }
+  next();
+});
+
 router.get('/', (_req, res) => {
   const d = openDb();
   res.json({ available: d !== null, cycle });
