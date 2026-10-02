@@ -12,9 +12,20 @@ services:
       - proxy
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.atc.rule=Host(`atc.himmelreich.cloud`)"
-      - "traefik.http.routers.atc.entrypoints=web"
       - "traefik.http.services.atc.loadbalancer.server.port=80"
+      # Spiel unter games.himmelreich.cloud/atc
+      - "traefik.http.routers.atc.rule=Host(`games.himmelreich.cloud`) && PathPrefix(`/atc`)"
+      - "traefik.http.routers.atc.entrypoints=web"
+      - "traefik.http.routers.atc.service=atc"
+      - "traefik.http.routers.atc.middlewares=atc-strip"
+      - "traefik.http.middlewares.atc-strip.stripprefix.prefixes=/atc"
+      # Alte Adresse atc.himmelreich.cloud leitet weiter
+      - "traefik.http.routers.atc-old.rule=Host(`atc.himmelreich.cloud`)"
+      - "traefik.http.routers.atc-old.entrypoints=web"
+      - "traefik.http.routers.atc-old.service=atc"
+      - "traefik.http.routers.atc-old.middlewares=atc-moved"
+      - "traefik.http.middlewares.atc-moved.redirectregex.regex=^https?://atc\\.himmelreich\\.cloud/?(.*)"
+      - "traefik.http.middlewares.atc-moved.redirectregex.replacement=https://games.himmelreich.cloud/atc/$${1}"
     depends_on:
       - atc-api
 

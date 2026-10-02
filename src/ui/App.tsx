@@ -108,6 +108,8 @@ export function App() {
       maxHeight: isMobile ? '60vh' : undefined,
     }}>
 
+      <a href="https://games.himmelreich.cloud/" style={{ color: '#446644', fontSize: 11, letterSpacing: 1, textDecoration: 'none', whiteSpace: 'nowrap' }}>← ALLE SPIELE</a>
+
       {/* Airport selector */}
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
         <label style={{ color: '#446644', fontSize: 10, letterSpacing: 1, whiteSpace: 'nowrap' }}>AIRPORT</label>

@@ -38,7 +38,7 @@ export async function fetchLiveTraffic(
 
   try {
     const res = await fetch(
-      `/api/traffic?lamin=${lamin}&lamax=${lamax}&lomin=${lomin}&lomax=${lomax}`
+      `${import.meta.env.BASE_URL}api/traffic?lamin=${lamin}&lamax=${lamax}&lomin=${lomin}&lomax=${lomax}`
     );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: OpenSkyResponse = await res.json();

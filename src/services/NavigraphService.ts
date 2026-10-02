@@ -126,7 +126,7 @@ export function getAllWaypoints(icao: string): Waypoint[] {
 /** Attempt to load custom navdata.json from /api/navdata/:icao */
 export async function fetchNavData(icao: string): Promise<NavDatabase | null> {
   try {
-    const res = await fetch(`/api/navdata/${icao.toUpperCase()}`);
+    const res = await fetch(`${import.meta.env.BASE_URL}api/navdata/${icao.toUpperCase()}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json() as NavDatabase;
   } catch {

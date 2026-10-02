@@ -63,7 +63,7 @@ export async function fetchAirportData(icao: string): Promise<{ airport: Airport
 
   // Fetch Overpass geometry
   try {
-    const res = await fetch(`/api/airport/${upper}`);
+    const res = await fetch(`${import.meta.env.BASE_URL}api/airport/${upper}`);
     if (res.ok) {
       const osmData: OverpassResponse = await res.json();
       const merged = mergeOsmData(baseAirport, osmData);
