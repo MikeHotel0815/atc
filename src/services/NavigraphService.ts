@@ -172,3 +172,15 @@ export async function fetchOpenData(icao: string): Promise<NavDataResponse | nul
     return null;
   }
 }
+
+/** true, wenn die private Navigraph-Route mit dem gespeicherten Schlüssel Daten liefert */
+export async function fetchNavStatus(): Promise<boolean> {
+  try {
+    const res = await fetch(`${import.meta.env.BASE_URL}api/navdata`, { headers: { 'X-Navdata-Key': navdataKey() } });
+    if (!res.ok) return false;
+    const body = await res.json() as { available?: boolean };
+    return body.available === true;
+  } catch {
+    return false;
+  }
+}

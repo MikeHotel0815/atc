@@ -55,20 +55,45 @@ interface OverpassResponse {
 
 // ── Main fetch function ───────────────────────────────────────────────────────
 export type AirportSource = 'navdata' | 'static' | 'open' | 'generic';
+export type SourcePreference = 'auto' | Exclude<AirportSource, 'generic'>;
 
-export async function fetchAirportData(icao: string): Promise<{ airport: Airport; waypoints: Waypoint[]; stars: STAR[]; source: AirportSource }> {
+interface ResolvedData { airport: Airport; waypoints: Waypoint[]; stars: STAR[] }
+
+/** Lädt eine einzelne Quelle; null, wenn sie für diesen Platz nichts hat */
+async function loadSource(source: Exclude<AirportSource, 'generic'>, icao: string): Promise<ResolvedData | null> {
+  switch (source) {
+    case 'navdata': {
+      const d = await fetchNavData(icao);
+      return d ? { airport: d.airport, waypoints: d.waypoints, stars: d.stars } : null;
+    }
+    case 'static': {
+      const staticData = getStaticAirportData(icao);
+      if (staticData) return { airport: staticData.airport, waypoints: getStaticWaypoints(icao), stars: getStaticStars(icao) };
+      const legacy = LEGACY_FALLBACKS[icao];
+      return legacy ? { airport: legacy, waypoints: [], stars: [] } : null;
+    }
+    case 'open': {
+      const d = await fetchOpenData(icao);
+      return d ? { airport: d.airport, waypoints: d.waypoints, stars: [] } : null;
+    }
+  }
+}
+
+// Auto: Navigraph (privat) → handgepflegt → OurAirports (frei)
+const AUTO_ORDER: Array<Exclude<AirportSource, 'generic'>> = ['navdata', 'static', 'open'];
+
+export async function fetchAirportData(icao: string, preference: SourcePreference = 'auto'): Promise<ResolvedData & { source: AirportSource }> {
   const upper = icao.toUpperCase();
 
-  // Reihenfolge: Navigraph (privat) → handgepflegt → OurAirports (frei) → alte Fallbacks → generisch
-  const staticData = getStaticAirportData(upper);
-  const navdata = await fetchNavData(upper);
-  const open = navdata || staticData ? null : await fetchOpenData(upper);
-  const legacy = LEGACY_FALLBACKS[upper];
-
-  const baseAirport: Airport = navdata?.airport ?? staticData?.airport ?? open?.airport ?? legacy ?? buildGenericAirport(upper);
-  const waypoints: Waypoint[] = navdata?.waypoints ?? (staticData ? getStaticWaypoints(upper) : open?.waypoints ?? []);
-  const stars: STAR[] = navdata?.stars ?? (staticData ? getStaticStars(upper) : []);
-  const source: AirportSource = navdata ? 'navdata' : staticData ? 'static' : open ? 'open' : legacy ? 'static' : 'generic';
+  // Gewählte Quelle zuerst; hat sie den Platz nicht, greift die Auto-Reihenfolge
+  const order = preference === 'auto' ? AUTO_ORDER : [preference, ...AUTO_ORDER.filter((s) => s !== preference)];
+  let resolved: ResolvedData | null = null;
+  let source: AirportSource = 'generic';
+  for (const s of order) {
+    resolved = await loadSource(s, upper);
+    if (resolved) { source = s; break; }
+  }
+  const { airport: baseAirport, waypoints, stars } = resolved ?? { airport: buildGenericAirport(upper), waypoints: [], stars: [] };
   // Navigraph- und OurAirports-Schwellen sind genauer als der OSM-Abgleich
   const reconcile = source === 'static';
 
