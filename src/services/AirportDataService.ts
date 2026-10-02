@@ -36,7 +36,8 @@ const LEGACY_FALLBACKS: Record<string, Airport> = {
   },
 };
 
-export const AVAILABLE_AIRPORTS = ['EDDF', 'EGLL', 'KJFK', 'EDDL'];
+// Vorschläge in der Auswahl; mit Navigraph-Daten ist jeder ICAO-Code möglich
+export const AVAILABLE_AIRPORTS = ['EDDF', 'EDDM', 'EDDL', 'EDDH', 'EDDB', 'LSZH', 'LOWW', 'EGLL', 'LFPG', 'EHAM', 'KJFK'];
 
 // ── Overpass Response Types ───────────────────────────────────────────────────
 interface OverpassElement {
@@ -53,7 +54,9 @@ interface OverpassResponse {
 }
 
 // ── Main fetch function ───────────────────────────────────────────────────────
-export async function fetchAirportData(icao: string): Promise<{ airport: Airport; waypoints: Waypoint[]; stars: STAR[] }> {
+export type AirportSource = 'navdata' | 'static' | 'generic';
+
+export async function fetchAirportData(icao: string): Promise<{ airport: Airport; waypoints: Waypoint[]; stars: STAR[]; source: AirportSource }> {
   const upper = icao.toUpperCase();
 
   // Navigraph-AIRAC-Daten (falls auf dem Server installiert), sonst statische Daten
@@ -62,6 +65,7 @@ export async function fetchAirportData(icao: string): Promise<{ airport: Airport
   const baseAirport: Airport = navdata?.airport ?? staticData?.airport ?? LEGACY_FALLBACKS[upper] ?? buildGenericAirport(upper);
   const waypoints: Waypoint[] = navdata?.waypoints ?? (staticData ? getStaticWaypoints(upper) : []);
   const stars: STAR[] = navdata?.stars ?? getStaticStars(upper);
+  const source: AirportSource = navdata ? 'navdata' : (staticData || LEGACY_FALLBACKS[upper]) ? 'static' : 'generic';
 
   // Fetch Overpass geometry
   try {
@@ -70,13 +74,13 @@ export async function fetchAirportData(icao: string): Promise<{ airport: Airport
       const osmData: OverpassResponse = await res.json();
       // Navigraph-Schwellen sind genauer als OSM → nur bei statischen Daten abgleichen
       const merged = mergeOsmData(baseAirport, osmData, !navdata);
-      return { airport: merged, waypoints, stars };
+      return { airport: merged, waypoints, stars, source };
     }
   } catch (err) {
     console.warn(`Overpass fetch failed for ${upper}:`, err);
   }
 
-  return { airport: baseAirport, waypoints, stars };
+  return { airport: baseAirport, waypoints, stars, source };
 }
 
 // ── OSM Merge ─────────────────────────────────────────────────────────────────

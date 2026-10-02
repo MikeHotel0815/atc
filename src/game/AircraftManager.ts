@@ -16,6 +16,19 @@ import {
 type EventType = 'landing' | 'goaround' | 'conflict' | 'warning' | 'clear';
 type EventHandler = (event: { type: EventType; callsign?: string; pair?: ConflictPair }) => void;
 
+const SPAWN_ATTEMPTS = 20;
+const SPAWN_MIN_LATERAL_NM = 8;
+const SPAWN_MIN_VERTICAL_FT = 2000;
+const SPAWN_RETRY_S = 10;
+
+interface SpawnCandidate {
+  lat: number;
+  lng: number;
+  initHdg: number;
+  initAlt: number;
+  starId?: string;
+}
+
 export class AircraftManager {
   private aircraft: Map<string, Aircraft> = new Map();
   private airport: Airport | null = null;
@@ -114,8 +127,7 @@ export class AircraftManager {
     // Spawn timer
     this.nextSpawnIn -= dt;
     if (this.nextSpawnIn <= 0 && this.aircraft.size < MAX_AIRCRAFT) {
-      this.spawnAircraft();
-      this.nextSpawnIn = this.randomSpawnInterval();
+      this.nextSpawnIn = this.spawnAircraft() ? this.randomSpawnInterval() : SPAWN_RETRY_S;
     }
 
     // Update all aircraft
@@ -205,40 +217,16 @@ export class AircraftManager {
     }
   }
 
-  /** Zufällige STAR, deren Einstiegs-Fix möglichst weit vom übrigen Verkehr entfernt ist */
-  private pickSpawnStar(): STAR {
-    let best = this.spawnStars[0];
-    let bestDist = -1;
-    for (let i = 0; i < 10; i++) {
-      const star = this.spawnStars[Math.floor(Math.random() * this.spawnStars.length)];
-      const entry = star.waypoints[0];
-      let nearest = Infinity;
-      for (const ac of this.aircraft.values()) {
-        nearest = Math.min(nearest, distanceNM(entry.lat, entry.lng, ac.lat, ac.lng));
-      }
-      if (nearest > bestDist) { best = star; bestDist = nearest; }
-      if (nearest >= 15) break;
-    }
-    return best;
-  }
-
-  private spawnAircraft(): void {
-    if (!this.airport) return;
-    const types = Object.keys(AIRCRAFT_TYPES);
-    const type = types[Math.floor(Math.random() * types.length)];
-    const typeData = AIRCRAFT_TYPES[type];
-    const callsign = this.generateCallsign();
-    const id = `${callsign}-${Date.now()}`;
-
+  private spawnCandidate(): SpawnCandidate {
+    const airport = this.airport!;
     let lat: number, lng: number, initHdg: number;
-    let starId: string | undefined;
-    const starLegIndex = 0;
+    let star: STAR | undefined;
 
     if (this.spawnStars.length > 0) {
       // Pick a random STAR and spawn 15–20 NM before its entry fix
-      const star = this.pickSpawnStar();
+      star = this.spawnStars[Math.floor(Math.random() * this.spawnStars.length)];
       const entryFix = star.waypoints[0];
-      const nextFix = star.waypoints[1] ?? { lat: this.airport.lat, lng: this.airport.lng };
+      const nextFix = star.waypoints[1] ?? { lat: airport.lat, lng: airport.lng };
       // Inbound track: entry → next; spawn on reciprocal (behind the fix)
       const inboundBearing = bearingBetween(entryFix.lat, entryFix.lng, nextFix.lat, nextFix.lng);
       const spawnDist = 15 + Math.random() * 5;
@@ -246,20 +234,55 @@ export class AircraftManager {
       lat = spawnPos.lat;
       lng = spawnPos.lng;
       initHdg = Math.round(bearingBetween(lat, lng, entryFix.lat, entryFix.lng));
-      starId = star.id;
     } else {
       const pos = this.randomEntryPoint();
       lat = pos.lat;
       lng = pos.lng;
-      initHdg = Math.round(bearingBetween(lat, lng, this.airport.lat, this.airport.lng));
+      initHdg = Math.round(bearingBetween(lat, lng, airport.lat, airport.lng));
     }
 
     // Altitude: at or above first STAR leg restriction (or random FL100–FL180)
-    const star = this.stars.find((s) => s.id === starId);
     const firstAltRestr = star?.legs[0]?.altRestrictionFt;
     const initAlt = firstAltRestr
-      ? Math.max(firstAltRestr, firstAltRestr + Math.floor(Math.random() * 2000))
+      ? firstAltRestr + Math.floor(Math.random() * 2000)
       : 10000 + Math.floor(Math.random() * 8000);
+
+    return { lat, lng, initHdg, initAlt, starId: star?.id };
+  }
+
+  /** ≥ 1, wenn der Kandidat zu allen Flugzeugen seitlich oder vertikal genug Abstand hat */
+  private separationScore(c: SpawnCandidate): number {
+    let score = Infinity;
+    for (const ac of this.aircraft.values()) {
+      const lateral = distanceNM(c.lat, c.lng, ac.lat, ac.lng) / SPAWN_MIN_LATERAL_NM;
+      const vertical = Math.abs(c.initAlt - ac.altitudeFt) / SPAWN_MIN_VERTICAL_FT;
+      score = Math.min(score, Math.max(lateral, vertical));
+    }
+    return score;
+  }
+
+  /** Returns false if no conflict-free spawn position was found */
+  private spawnAircraft(): boolean {
+    if (!this.airport) return false;
+    // Mehrere Kandidaten würfeln und den ersten mit sicherem Abstand zum Verkehr nehmen
+    let spawn: SpawnCandidate | null = null;
+    let bestSep = -1;
+    for (let i = 0; i < SPAWN_ATTEMPTS; i++) {
+      const cand = this.spawnCandidate();
+      const sep = this.separationScore(cand);
+      if (sep > bestSep) { spawn = cand; bestSep = sep; }
+      if (sep >= 1) break;
+    }
+    // Kein freier Einstieg → später erneut versuchen statt einen Konflikt zu erzeugen
+    if (!spawn || bestSep < 1) return false;
+    const { lat, lng, initHdg, initAlt, starId } = spawn;
+    const starLegIndex = 0;
+
+    const types = Object.keys(AIRCRAFT_TYPES);
+    const type = types[Math.floor(Math.random() * types.length)];
+    const typeData = AIRCRAFT_TYPES[type];
+    const callsign = this.generateCallsign();
+    const id = `${callsign}-${Date.now()}`;
 
     const ac = createAircraft({
       id,
@@ -281,6 +304,7 @@ export class AircraftManager {
     });
 
     this.aircraft.set(id, ac);
+    return true;
   }
 
   private randomEntryPoint(): { lat: number; lng: number } {

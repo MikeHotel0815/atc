@@ -30,6 +30,9 @@ export function App() {
   const [airport, setAirport] = useState<Airport | null>(null);
   const [selectedIcao, setSelectedIcao] = useState(() => pendingSessionRef.current?.icao ?? 'EDDF');
   const [loading, setLoading] = useState(true);
+  const [icaoInput, setIcaoInput] = useState(selectedIcao);
+  const [icaoError, setIcaoError] = useState<string | null>(null);
+  const lastGoodIcaoRef = useRef<string | null>(null);
   const [isMobile, setIsMobile] = useState(window.innerWidth < MOBILE_BREAKPOINT);
   const [bottomOpen, setBottomOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -55,7 +58,16 @@ export function App() {
   useEffect(() => {
     selectedIcaoRef.current = selectedIcao;
     setLoading(true);
-    fetchAirportData(selectedIcao).then(({ airport: ap, waypoints: wps, stars }) => {
+    fetchAirportData(selectedIcao).then(({ airport: ap, waypoints: wps, stars, source }) => {
+      // Unbekannter Platz (weder Navigraph noch statisch) → beim bisherigen bleiben
+      if (source === 'generic' && lastGoodIcaoRef.current) {
+        setIcaoError(`${selectedIcao} nicht gefunden`);
+        setIcaoInput(lastGoodIcaoRef.current);
+        setSelectedIcao(lastGoodIcaoRef.current);
+        setLoading(false);
+        return;
+      }
+      lastGoodIcaoRef.current = selectedIcao;
       setAirport(ap);
       const engine = engineRef.current;
       if (!engine) return;
@@ -113,15 +125,28 @@ export function App() {
       {/* Airport selector */}
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
         <label style={{ color: '#446644', fontSize: 10, letterSpacing: 1, whiteSpace: 'nowrap' }}>AIRPORT</label>
-        <select
-          value={selectedIcao}
-          onChange={(e) => setSelectedIcao(e.target.value)}
-          style={{ background: '#0a1a0a', border: '1px solid #1a4428', color: '#00ff88', fontFamily: '"Courier New", monospace', fontSize: 12, padding: '3px 6px', flex: 1, outline: 'none' }}
-        >
-          {AVAILABLE_AIRPORTS.map((icao) => <option key={icao} value={icao}>{icao}</option>)}
-        </select>
+        {/* Freie ICAO-Eingabe (Navigraph-Daten), Vorschläge per Datalist */}
+        <input
+          value={icaoInput}
+          list="atc-airports"
+          maxLength={4}
+          spellCheck={false}
+          onChange={(e) => {
+            const v = e.target.value.toUpperCase();
+            setIcaoInput(v);
+            setIcaoError(null);
+            if (AVAILABLE_AIRPORTS.includes(v)) setSelectedIcao(v);
+          }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && /^[A-Z0-9]{4}$/.test(icaoInput)) setSelectedIcao(icaoInput); }}
+          onBlur={() => { if (/^[A-Z0-9]{4}$/.test(icaoInput)) setSelectedIcao(icaoInput); else setIcaoInput(selectedIcao); }}
+          style={{ background: '#0a1a0a', border: '1px solid #1a4428', color: '#00ff88', fontFamily: '"Courier New", monospace', fontSize: 12, padding: '3px 6px', flex: 1, minWidth: 0, outline: 'none', textTransform: 'uppercase' }}
+        />
+        <datalist id="atc-airports">
+          {AVAILABLE_AIRPORTS.map((icao) => <option key={icao} value={icao} />)}
+        </datalist>
         {loading && <span style={{ color: '#446644', fontSize: 10 }}>LOAD</span>}
       </div>
+      {icaoError && <div style={{ color: '#ff4444', fontSize: 10 }}>{icaoError}</div>}
 
       {/* Active landing runway */}
       {airport && (() => {
