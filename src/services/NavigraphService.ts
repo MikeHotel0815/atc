@@ -1,4 +1,5 @@
 // filepath: src/services/NavigraphService.ts
+import type { Airport } from '@/types/airport';
 import type { NavDatabase, STAR, Waypoint } from '@/types/navdata';
 
 // Hardcoded fallback navdata for supported airports
@@ -123,13 +124,20 @@ export function getAllWaypoints(icao: string): Waypoint[] {
   return Object.values(db.waypoints);
 }
 
-/** Attempt to load custom navdata.json from /api/navdata/:icao */
-export async function fetchNavData(icao: string): Promise<NavDatabase | null> {
+export interface NavDataResponse {
+  cycle: string | null;
+  airport: Airport;
+  waypoints: Waypoint[];
+  stars: STAR[];
+}
+
+/** Navigraph-AIRAC-Daten vom Server; null, wenn nicht installiert oder Flughafen unbekannt */
+export async function fetchNavData(icao: string): Promise<NavDataResponse | null> {
   try {
     const res = await fetch(`${import.meta.env.BASE_URL}api/navdata/${icao.toUpperCase()}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json() as NavDatabase;
+    if (!res.ok) return null;
+    return await res.json() as NavDataResponse;
   } catch {
-    return getNavDatabase(icao);
+    return null;
   }
 }

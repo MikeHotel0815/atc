@@ -3,6 +3,7 @@ import type { Airport, OsmWay, Runway } from '@/types/airport';
 import type { Waypoint, STAR } from '@/types/navdata';
 import { getStaticAirportData, getStaticWaypoints, getStaticStars } from '@/data/airports/index';
 import { bearingBetween } from '@/utils/geo';
+import { fetchNavData } from './NavigraphService';
 
 // Legacy fallback airports for non-registered ICAOs
 const LEGACY_FALLBACKS: Record<string, Airport> = {
@@ -55,18 +56,20 @@ interface OverpassResponse {
 export async function fetchAirportData(icao: string): Promise<{ airport: Airport; waypoints: Waypoint[]; stars: STAR[] }> {
   const upper = icao.toUpperCase();
 
-  // Get static base (registry or legacy fallback)
+  // Navigraph-AIRAC-Daten (falls auf dem Server installiert), sonst statische Daten
+  const navdata = await fetchNavData(upper);
   const staticData = getStaticAirportData(upper);
-  const baseAirport: Airport = staticData?.airport ?? LEGACY_FALLBACKS[upper] ?? buildGenericAirport(upper);
-  const waypoints: Waypoint[] = staticData ? getStaticWaypoints(upper) : [];
-  const stars: STAR[] = getStaticStars(upper);
+  const baseAirport: Airport = navdata?.airport ?? staticData?.airport ?? LEGACY_FALLBACKS[upper] ?? buildGenericAirport(upper);
+  const waypoints: Waypoint[] = navdata?.waypoints ?? (staticData ? getStaticWaypoints(upper) : []);
+  const stars: STAR[] = navdata?.stars ?? getStaticStars(upper);
 
   // Fetch Overpass geometry
   try {
     const res = await fetch(`${import.meta.env.BASE_URL}api/airport/${upper}`);
     if (res.ok) {
       const osmData: OverpassResponse = await res.json();
-      const merged = mergeOsmData(baseAirport, osmData);
+      // Navigraph-Schwellen sind genauer als OSM → nur bei statischen Daten abgleichen
+      const merged = mergeOsmData(baseAirport, osmData, !navdata);
       return { airport: merged, waypoints, stars };
     }
   } catch (err) {
@@ -77,7 +80,7 @@ export async function fetchAirportData(icao: string): Promise<{ airport: Airport
 }
 
 // ── OSM Merge ─────────────────────────────────────────────────────────────────
-function mergeOsmData(base: Airport, osm: OverpassResponse): Airport {
+function mergeOsmData(base: Airport, osm: OverpassResponse, reconcile: boolean): Airport {
   const ways = osm.elements.filter((e): e is OverpassElement & { geometry: Array<{ lat: number; lon: number }> } =>
     e.type === 'way' && Array.isArray(e.geometry) && e.geometry.length >= 2
   );
@@ -106,7 +109,7 @@ function mergeOsmData(base: Airport, osm: OverpassResponse): Airport {
     .map((n) => ({ lat: n.lat!, lng: n.lon!, name: n.tags?.ref }));
 
   // Update runway thresholds from OSM if available
-  const runways = reconcileRunways(base.runways, osmRunways);
+  const runways = reconcile ? reconcileRunways(base.runways, osmRunways) : base.runways;
 
   return {
     ...base,

@@ -40,6 +40,10 @@ services:
       PORT: 3001
       HOST: 0.0.0.0
       TZ: Europe/Berlin
+      NAVDATA_DB: /app/data/navdata/little_navmap_navigraph.sqlite
+    volumes:
+      # Navigraph-AIRAC-DB (lizenziert, nicht im Repo) – siehe scripts/extract-navdata.sh
+      - ./data/navdata:/app/data/navdata:ro
     networks:
       - proxy
 

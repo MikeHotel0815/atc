@@ -136,6 +136,7 @@ export class GameEngine {
       ? this.pickPrimaryDirection(ilsRunways).map((r) => r.id)
       : [];
     this.state = { ...this.state, activeRunwayIds };
+    this.manager.setSpawnStars(this.activeStars());
     for (let i = 0; i < 3; i++) this.manager.forceSpawn();
   }
 
@@ -179,7 +180,7 @@ export class GameEngine {
           viewLng: this.viewLng,
           previewHeading: this.previewHdg,
           previewAltitude: this.previewAlt,
-          stars: this.stars,
+          stars: this.activeStars(),
           display: this.state.display,
           activeRunwayIds: this.state.activeRunwayIds,
         });
@@ -237,7 +238,15 @@ export class GameEngine {
     const ids = this.state.activeRunwayIds;
     const next = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
     this.state = { ...this.state, activeRunwayIds: next };
+    this.manager.setSpawnStars(this.activeStars());
     this.trySave();
+  }
+
+  /** STARs für die aktiven Bahnen (oder "ALL"); ohne Treffer alle STARs */
+  private activeStars(): STAR[] {
+    const ids = this.state.activeRunwayIds;
+    const matching = this.stars.filter((s) => s.runway === 'ALL' || ids.includes(s.runway));
+    return matching.length > 0 ? matching : this.stars;
   }
 
   /** Pick all ILS runways whose heading is closest to the median heading of the set. */
@@ -311,6 +320,7 @@ export class GameEngine {
       display: data.display ?? { ...DEFAULT_DISPLAY },
       activeRunwayIds: data.activeRunwayIds ?? [],
     };
+    this.manager.setSpawnStars(this.activeStars());
     this.viewLat = data.viewLat;
     this.viewLng = data.viewLng;
     this.manager.importAircraft(data.aircraft);

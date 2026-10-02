@@ -3,6 +3,7 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 import airportRouter from './routes/airport.js';
 import trafficRouter from './routes/traffic.js';
+import navdataRouter from './routes/navdata.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -34,6 +35,7 @@ app.use((_req, res, next) => {
 
 app.use('/api/airport', airportRouter);
 app.use('/api/traffic', trafficRouter);
+app.use('/api/navdata', navdataRouter);
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 

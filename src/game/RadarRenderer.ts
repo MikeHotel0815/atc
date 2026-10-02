@@ -529,6 +529,7 @@ export class RadarRenderer {
     ctx.strokeStyle = 'rgba(180,120,255,0.45)';
     ctx.lineWidth = 1;
     ctx.setLineDash([6, 5]);
+    const labelled = new Set<string>();
     for (const star of stars) {
       const pts = star.waypoints;
       if (pts.length < 2) continue;
@@ -540,12 +541,15 @@ export class RadarRenderer {
         ctx.lineTo(p.x, p.y);
       }
       ctx.stroke();
-      // STAR id label at first waypoint
+      // STAR name label at first waypoint (once per name, runway variants share it)
+      const label = star.name ?? star.id;
+      if (labelled.has(label)) continue;
+      labelled.add(label);
       ctx.setLineDash([]);
       ctx.fillStyle = 'rgba(180,120,255,0.70)';
       ctx.font = '8px "Courier New"';
       ctx.textAlign = 'left';
-      ctx.fillText(star.id, first.x + 5, first.y - 4);
+      ctx.fillText(label, first.x + 5, first.y - 4);
       ctx.setLineDash([6, 5]);
     }
     ctx.restore();

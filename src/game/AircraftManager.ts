@@ -20,6 +20,7 @@ export class AircraftManager {
   private aircraft: Map<string, Aircraft> = new Map();
   private airport: Airport | null = null;
   private stars: STAR[] = [];
+  private spawnStars: STAR[] = []; // STARs der aktiven Bahnen
   private listeners: EventHandler[] = [];
   private nextSpawnIn: number;
   private usedCallsigns = new Set<string>();
@@ -42,6 +43,11 @@ export class AircraftManager {
   setAirport(airport: Airport, stars: STAR[] = []): void {
     this.airport = airport;
     this.stars = stars;
+    this.spawnStars = stars;
+  }
+
+  setSpawnStars(stars: STAR[]): void {
+    this.spawnStars = stars;
   }
 
   on(handler: EventHandler): void {
@@ -199,6 +205,23 @@ export class AircraftManager {
     }
   }
 
+  /** Zufällige STAR, deren Einstiegs-Fix möglichst weit vom übrigen Verkehr entfernt ist */
+  private pickSpawnStar(): STAR {
+    let best = this.spawnStars[0];
+    let bestDist = -1;
+    for (let i = 0; i < 10; i++) {
+      const star = this.spawnStars[Math.floor(Math.random() * this.spawnStars.length)];
+      const entry = star.waypoints[0];
+      let nearest = Infinity;
+      for (const ac of this.aircraft.values()) {
+        nearest = Math.min(nearest, distanceNM(entry.lat, entry.lng, ac.lat, ac.lng));
+      }
+      if (nearest > bestDist) { best = star; bestDist = nearest; }
+      if (nearest >= 15) break;
+    }
+    return best;
+  }
+
   private spawnAircraft(): void {
     if (!this.airport) return;
     const types = Object.keys(AIRCRAFT_TYPES);
@@ -211,9 +234,9 @@ export class AircraftManager {
     let starId: string | undefined;
     const starLegIndex = 0;
 
-    if (this.stars.length > 0) {
+    if (this.spawnStars.length > 0) {
       // Pick a random STAR and spawn 15–20 NM before its entry fix
-      const star = this.stars[Math.floor(Math.random() * this.stars.length)];
+      const star = this.pickSpawnStar();
       const entryFix = star.waypoints[0];
       const nextFix = star.waypoints[1] ?? { lat: this.airport.lat, lng: this.airport.lng };
       // Inbound track: entry → next; spawn on reciprocal (behind the fix)
