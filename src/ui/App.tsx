@@ -20,11 +20,10 @@ const SOURCE_STORAGE = 'atc-data-source';
 const SOURCE_OPTIONS: Array<{ id: SourcePreference; label: string; title: string }> = [
   { id: 'auto',    label: 'AUTO',  title: 'Beste verfügbare Quelle' },
   { id: 'navdata', label: 'NAVIG', title: 'Navigraph AIRAC (privat)' },
-  { id: 'static',  label: 'MANU',  title: 'Handgepflegte Daten' },
   { id: 'open',    label: 'OPEN',  title: 'OurAirports (frei)' },
 ];
 const SOURCE_NAMES: Record<AirportSource, string> = {
-  navdata: 'Navigraph', static: 'handgepflegt', open: 'OurAirports', generic: 'generisch',
+  navdata: 'Navigraph', open: 'OurAirports', generic: 'generisch',
 };
 
 function loadSourcePref(): SourcePreference {
@@ -89,7 +88,7 @@ export function App() {
     selectedIcaoRef.current = selectedIcao;
     setLoading(true);
     fetchAirportData(selectedIcao, sourcePref).then(({ airport: ap, waypoints: wps, stars, source }) => {
-      // Unbekannter Platz (weder Navigraph noch statisch) → beim bisherigen bleiben
+      // Unbekannter Platz (weder Navigraph noch OurAirports) → beim bisherigen bleiben
       if (source === 'generic' && lastGoodIcaoRef.current) {
         setIcaoError(`${selectedIcao} nicht gefunden`);
         setIcaoInput(lastGoodIcaoRef.current);

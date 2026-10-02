@@ -21,8 +21,3 @@ export interface STAR {
   waypoints: Waypoint[];
   legs: STARLeg[];
 }
-
-export interface NavDatabase {
-  waypoints: Record<string, Waypoint>;
-  stars: STAR[];
-}
