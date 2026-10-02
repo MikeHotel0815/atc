@@ -18,6 +18,7 @@ const MAX_AGE_MS = 30 * 86400_000;
 const FT_TO_M = 0.3048;
 const NAVAID_RADIUS_NM = 50;
 const ILS_MIN_LENGTH_M = 1500;
+const MIN_LENGTH_M = 600; // kürzere Bahnen (Graspisten, Helipads) sind fürs Spiel irrelevant
 const HARD_SURFACE = /ASP|CON|PEM|BIT|TAR|PAV/i;
 
 type Row = Record<string, string>;
@@ -129,6 +130,7 @@ function buildRunways(rows: Row[]): Runway[] {
 
     const lengthM = Math.round((num(r.length_ft) ?? distanceNM(le.lat, le.lng, he.lat, he.lng) * 6076) * FT_TO_M);
     const widthM = Math.round((num(r.width_ft) ?? 148) * FT_TO_M);
+    if (lengthM < MIN_LENGTH_M) continue;
     const withIls = lengthM >= ILS_MIN_LENGTH_M && HARD_SURFACE.test(r.surface);
 
     for (const [a, b] of [[le, he], [he, le]] as const) {
