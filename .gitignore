@@ -7,3 +7,6 @@ dist/
 data/navdata/
 lnm_*.zip
 lnm_*.exe
+
+# OurAirports-CSVs werden vom Server selbst geladen
+data/opendata/

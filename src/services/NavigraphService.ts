@@ -161,3 +161,14 @@ export async function fetchNavData(icao: string): Promise<NavDataResponse | null
     return null;
   }
 }
+
+/** Freie Flughafendaten (OurAirports): Bahnen und Navaids, keine STARs */
+export async function fetchOpenData(icao: string): Promise<NavDataResponse | null> {
+  try {
+    const res = await fetch(`${import.meta.env.BASE_URL}api/opendata/${icao.toUpperCase()}`);
+    if (!res.ok) return null;
+    return await res.json() as NavDataResponse;
+  } catch {
+    return null;
+  }
+}

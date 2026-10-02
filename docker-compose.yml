@@ -46,6 +46,8 @@ services:
     volumes:
       # Navigraph-AIRAC-DB (lizenziert, nicht im Repo) – siehe scripts/extract-navdata.sh
       - ./data/navdata:/app/data/navdata:ro
+      # OurAirports-CSVs (frei, vom Server geladen und gecacht)
+      - ./data/opendata:/app/data/opendata
     networks:
       - proxy
 

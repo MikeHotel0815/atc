@@ -3,7 +3,7 @@ import type { Airport, OsmWay, Runway } from '@/types/airport';
 import type { Waypoint, STAR } from '@/types/navdata';
 import { getStaticAirportData, getStaticWaypoints, getStaticStars } from '@/data/airports/index';
 import { bearingBetween } from '@/utils/geo';
-import { fetchNavData } from './NavigraphService';
+import { fetchNavData, fetchOpenData } from './NavigraphService';
 
 // Legacy fallback airports for non-registered ICAOs
 const LEGACY_FALLBACKS: Record<string, Airport> = {
@@ -54,26 +54,30 @@ interface OverpassResponse {
 }
 
 // ── Main fetch function ───────────────────────────────────────────────────────
-export type AirportSource = 'navdata' | 'static' | 'generic';
+export type AirportSource = 'navdata' | 'static' | 'open' | 'generic';
 
 export async function fetchAirportData(icao: string): Promise<{ airport: Airport; waypoints: Waypoint[]; stars: STAR[]; source: AirportSource }> {
   const upper = icao.toUpperCase();
 
-  // Navigraph-AIRAC-Daten (falls auf dem Server installiert), sonst statische Daten
-  const navdata = await fetchNavData(upper);
+  // Reihenfolge: Navigraph (privat) → handgepflegt → OurAirports (frei) → alte Fallbacks → generisch
   const staticData = getStaticAirportData(upper);
-  const baseAirport: Airport = navdata?.airport ?? staticData?.airport ?? LEGACY_FALLBACKS[upper] ?? buildGenericAirport(upper);
-  const waypoints: Waypoint[] = navdata?.waypoints ?? (staticData ? getStaticWaypoints(upper) : []);
-  const stars: STAR[] = navdata?.stars ?? getStaticStars(upper);
-  const source: AirportSource = navdata ? 'navdata' : (staticData || LEGACY_FALLBACKS[upper]) ? 'static' : 'generic';
+  const navdata = await fetchNavData(upper);
+  const open = navdata || staticData ? null : await fetchOpenData(upper);
+  const legacy = LEGACY_FALLBACKS[upper];
+
+  const baseAirport: Airport = navdata?.airport ?? staticData?.airport ?? open?.airport ?? legacy ?? buildGenericAirport(upper);
+  const waypoints: Waypoint[] = navdata?.waypoints ?? (staticData ? getStaticWaypoints(upper) : open?.waypoints ?? []);
+  const stars: STAR[] = navdata?.stars ?? (staticData ? getStaticStars(upper) : []);
+  const source: AirportSource = navdata ? 'navdata' : staticData ? 'static' : open ? 'open' : legacy ? 'static' : 'generic';
+  // Navigraph- und OurAirports-Schwellen sind genauer als der OSM-Abgleich
+  const reconcile = source === 'static';
 
   // Fetch Overpass geometry
   try {
     const res = await fetch(`${import.meta.env.BASE_URL}api/airport/${upper}`);
     if (res.ok) {
       const osmData: OverpassResponse = await res.json();
-      // Navigraph-Schwellen sind genauer als OSM → nur bei statischen Daten abgleichen
-      const merged = mergeOsmData(baseAirport, osmData, !navdata);
+      const merged = mergeOsmData(baseAirport, osmData, reconcile);
       return { airport: merged, waypoints, stars, source };
     }
   } catch (err) {

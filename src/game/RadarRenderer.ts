@@ -516,7 +516,9 @@ export class RadarRenderer {
     ctx.textAlign  = 'left';
     const lx = thr.x + Math.sin(toRad(appFrom)) * 14;
     const ly = thr.y - Math.cos(toRad(appFrom)) * 14;
-    ctx.fillText(`ILS ${rwy.id} ${rwy.ils.frequencyMHz.toFixed(2)} Cat${rwy.ils.category}`, lx, ly);
+    // Frequenz 0 = unbekannt (angenommenes ILS aus freien Daten)
+    const freq = rwy.ils.frequencyMHz > 0 ? ` ${rwy.ils.frequencyMHz.toFixed(2)}` : '';
+    ctx.fillText(`ILS ${rwy.id}${freq} Cat${rwy.ils.category}`, lx, ly);
   }
 
   // ── STAR routes ───────────────────────────────────────────────────────────
