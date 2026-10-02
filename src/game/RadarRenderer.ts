@@ -427,9 +427,10 @@ export class RadarRenderer {
       ctx.textAlign = 'center';
       const labelOffset = Math.max(10, len * 0.1);
       const ux = dx / len, uy = dy / len;
-      ctx.fillText(rwy.id,     p2.x - ux * labelOffset, p2.y - uy * labelOffset + 4);
+      // Kennung steht an ihrer eigenen Schwelle (p1), die Gegenrichtung am anderen Ende (p2)
+      ctx.fillText(rwy.id,     p1.x + ux * labelOffset, p1.y + uy * labelOffset + 4);
       if (rwy.id !== rwy.recipId) {
-        ctx.fillText(rwy.recipId, p1.x + ux * labelOffset, p1.y + uy * labelOffset + 4);
+        ctx.fillText(rwy.recipId, p2.x - ux * labelOffset, p2.y - uy * labelOffset + 4);
       }
     }
   }
