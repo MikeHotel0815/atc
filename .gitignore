@@ -5,3 +5,5 @@ dist/
 
 # Navigraph-AIRAC-Daten sind lizenziert und dürfen nicht ins Repo
 data/navdata/
+lnm_*.zip
+lnm_*.exe
