@@ -1,5 +1,5 @@
 // filepath: src/ui/ContextMenu.tsx
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Aircraft, ATCCommand } from '@/types/aircraft';
 import type { Airport } from '@/types/airport';
 import { getILSStatusForRunway } from '@/game/ILS';
@@ -170,16 +170,16 @@ export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPrevie
         />
       </div>
       <ScrollableValue
-        initial={Math.round(ac.altitudeFt / 100) * 100}
-        step={100} stepShift={1000}
-        min={0} max={41000}
+        initial={Math.round(ac.altitudeFt / 1000) * 1000}
+        step={1000} stepShift={100}
+        min={1000} max={41000}
         format={(v) => `FL${String(v / 100).padStart(3, '0')}`}
         unit="ALT"
         onSend={(v) => cmd({ type: 'altitude', value: v })}
         onPreview={(v) => onAltitudePreview?.(ac.id, v)}
       />
       <div style={{ display: 'flex', flexWrap: 'wrap' }}>
-        {[10000, 8000, 6000, 4000, 2000].map((alt) => (
+        {[12000, 10000, 8000, 6000, 5000, 4000].map((alt) => (
           <HoverItem
             key={alt}
             style={{ ...ITEM_STYLE, flex: '0 0 33%', justifyContent: 'center', fontSize: 11, padding: '5px 4px' }}
@@ -320,6 +320,25 @@ function ScrollableValue({ initial, step, stepShift, min, max, wrap, format, uni
     }
   }, [active]);
 
+  /** Wert um d ändern; aktiviert das Feld beim ersten Mal (Mausrad, ▲/▼-Tasten, −/+-Buttons) */
+  const adjust = useCallback((d: number) => {
+    if (!active) {
+      // Auto-activate from current initial value (reset state to initial first)
+      rawDeltaRef.current = 0;
+      setValue(initial);
+      setActive(true);
+      onPreviewRef.current?.(initial);
+      onPreviewDeltaRef.current?.(0);
+    }
+    rawDeltaRef.current += d;
+    setValue((prev) => {
+      const next = (active ? prev : initial) + d;
+      if (wrap) return ((next - 1 + 360) % 360) + 1;
+      return Math.max(min, Math.min(max, next));
+    });
+    onPreviewDeltaRef.current?.(rawDeltaRef.current);
+  }, [active, initial, min, max, wrap]);
+
   // Scroll wheel: activate on first scroll, then adjust
   useEffect(() => {
     const el = ref.current;
@@ -327,27 +346,26 @@ function ScrollableValue({ initial, step, stepShift, min, max, wrap, format, uni
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      if (!active) {
-        // Auto-activate from current initial value (reset state to initial first)
-        rawDeltaRef.current = 0;
-        setValue(initial);
-        setActive(true);
-        onPreviewRef.current?.(initial);
-        onPreviewDeltaRef.current?.(0);
-      }
       const s = e.shiftKey ? stepShift : step;
-      const d = e.deltaY > 0 ? -s : s;
-      rawDeltaRef.current += d;
-      setValue((prev) => {
-        const next = prev + d;
-        if (wrap) return ((next - 1 + 360) % 360) + 1;
-        return Math.max(min, Math.min(max, next));
-      });
-      onPreviewDeltaRef.current?.(rawDeltaRef.current);
+      adjust(e.deltaY > 0 ? -s : s);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [active, initial, step, stepShift, min, max, wrap]);
+  }, [adjust, step, stepShift]);
+
+  // Pfeiltasten ↑/↓ ändern den aktiven Wert (Shift = feine Schritte)
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      e.preventDefault();
+      e.stopPropagation();
+      const s = e.shiftKey ? stepShift : step;
+      adjust(e.key === 'ArrowUp' ? s : -s);
+    };
+    document.addEventListener('keydown', onKey, { capture: true });
+    return () => document.removeEventListener('keydown', onKey, { capture: true });
+  }, [active, adjust, step, stepShift]);
 
   // ENTER key sends the value when active
   useEffect(() => {
@@ -379,16 +397,33 @@ function ScrollableValue({ initial, step, stepShift, min, max, wrap, format, uni
         userSelect: 'none',
         transition: 'background 0.1s',
       }}
-      title={active ? 'Scroll to adjust · Click to send' : 'Click to activate'}
+      title={active ? 'Mausrad, ↑/↓ oder −/+ zum Ändern · Klick oder Enter zum Senden' : 'Klick zum Aktivieren · Mausrad oder −/+ zum Ändern'}
     >
-      <span style={{ color: active ? '#00cc66' : '#2a5535', fontSize: 10 }}>↕</span>
+      <StepButton label="−" onClick={(e) => adjust(-(e.shiftKey ? stepShift : step))} />
       <span style={{ color: active ? '#00ff88' : '#446655', fontSize: 20, fontWeight: 'bold', letterSpacing: 2 }}>
         {format(value)}
       </span>
+      <StepButton label="+" onClick={(e) => adjust(e.shiftKey ? stepShift : step)} />
       <span style={{ color: active ? '#00cc66' : '#2a5535', fontSize: 10 }}>
         {active ? 'SEND' : unit}
       </span>
     </div>
+  );
+}
+
+// −/+ Button im Spinbox-Feld (Klick löst kein Senden aus)
+function StepButton({ label, onClick }: { label: string; onClick: (e: React.MouseEvent) => void }) {
+  return (
+    <span
+      onClick={(e) => { e.stopPropagation(); onClick(e); }}
+      style={{
+        color: '#00cc66', border: '1px solid #1a4428', borderRadius: 2,
+        width: 22, height: 22, lineHeight: '20px', textAlign: 'center',
+        fontSize: 14, fontWeight: 'bold', cursor: 'pointer', flex: '0 0 auto',
+      }}
+    >
+      {label}
+    </span>
   );
 }
 
