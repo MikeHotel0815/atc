@@ -777,6 +777,19 @@ export class RadarRenderer {
     const p = ll2c(ac.lat, ac.lng);
     if (p.x < -40 || p.x > W + 40 || p.y < -40 || p.y > H + 40) return;
 
+    // Direct-to-Linie zum Zielpunkt (nur ausgewählter Flieger)
+    if (selected && ac.directTo) {
+      const t = ll2c(ac.directTo.lat, ac.directTo.lng);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,220,80,0.6)';
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(t.x, t.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     let color = C.AC_GREEN;
     if (ac.conflict)     color = C.AC_RED;
     else if (ac.warning) color = C.AC_AMBER;

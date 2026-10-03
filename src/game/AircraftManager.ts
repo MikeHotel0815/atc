@@ -91,7 +91,7 @@ export class AircraftManager {
     let updated = { ...ac };
     switch (cmd.type) {
       case 'heading':
-        updated = { ...updated, targetHeading: cmd.value, turnDirection: cmd.turnDirection, state: ac.state === 'enroute' || ac.state === 'goaround' ? 'vectored' : ac.state };
+        updated = { ...updated, targetHeading: cmd.value, turnDirection: cmd.turnDirection, directTo: undefined, state: ac.state === 'enroute' || ac.state === 'goaround' ? 'vectored' : ac.state };
         break;
       case 'altitude':
         updated = { ...updated, targetAltitude: cmd.value };
@@ -106,10 +106,24 @@ export class AircraftManager {
             ...updated,
             clearedILS: true,
             assignedRunway: cmd.runwayId,
+            directTo: undefined,
             // Bahnwechsel hebt eine erteilte Landefreigabe auf
             clearedToLand: ac.assignedRunway === cmd.runwayId ? ac.clearedToLand : false,
             state: ac.state === 'enroute' || ac.state === 'vectored' || ac.state === 'goaround' ? 'vectored' : ac.state,
           };
+        }
+        break;
+      }
+      case 'direct': {
+        // Direct-to hebt eine Anflugfreigabe auf; der Flieger fliegt den Punkt direkt an
+        const cleared = { ...updated, clearedILS: false, clearedToLand: false, assignedRunway: undefined, turnDirection: undefined };
+        const star = ac.starId ? this.stars.find((s) => s.id === ac.starId) : undefined;
+        const starIdx = star ? star.waypoints.findIndex((w) => w.id === cmd.waypointId) : -1;
+        if (starIdx >= 0) {
+          // Punkt liegt auf der eigenen STAR → Abkürzung, danach geht es mit der STAR weiter
+          updated = { ...cleared, state: 'enroute', starLegIndex: starIdx, directTo: undefined };
+        } else {
+          updated = { ...cleared, state: 'vectored', directTo: { id: cmd.waypointId, lat: cmd.lat, lng: cmd.lng } };
         }
         break;
       }

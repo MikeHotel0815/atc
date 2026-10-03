@@ -5,6 +5,7 @@ import { DEFAULT_DISPLAY } from '@/game/RadarRenderer';
 import { fetchAirportData, AVAILABLE_AIRPORTS, type AirportSource, type SourcePreference } from '@/services/AirportDataService';
 import { fetchNavStatus } from '@/services/NavigraphService';
 import type { Airport } from '@/types/airport';
+import type { STAR, Waypoint } from '@/types/navdata';
 import type { ATCCommand, Aircraft } from '@/types/aircraft';
 import { RadarCanvas } from './RadarCanvas';
 import { AircraftStrip } from './AircraftStrip';
@@ -47,6 +48,8 @@ export function App() {
     activeRunwayIds: [],
   });
   const [airport, setAirport] = useState<Airport | null>(null);
+  const [navPoints, setNavPoints] = useState<Waypoint[]>([]);
+  const [stars, setStars] = useState<STAR[]>([]);
   const [selectedIcao, setSelectedIcao] = useState(() => pendingSessionRef.current?.icao ?? 'EDDF');
   const [loading, setLoading] = useState(true);
   const [icaoInput, setIcaoInput] = useState(selectedIcao);
@@ -87,7 +90,7 @@ export function App() {
   useEffect(() => {
     selectedIcaoRef.current = selectedIcao;
     setLoading(true);
-    fetchAirportData(selectedIcao, sourcePref).then(({ airport: ap, waypoints: wps, stars, source }) => {
+    fetchAirportData(selectedIcao, sourcePref).then(({ airport: ap, waypoints: wps, stars: apStars, source }) => {
       // Unbekannter Platz (weder Navigraph noch OurAirports) → beim bisherigen bleiben
       if (source === 'generic' && lastGoodIcaoRef.current) {
         setIcaoError(`${selectedIcao} nicht gefunden`);
@@ -99,9 +102,11 @@ export function App() {
       lastGoodIcaoRef.current = selectedIcao;
       setActiveSource(source);
       setAirport(ap);
+      setNavPoints(wps);
+      setStars(apStars);
       const engine = engineRef.current;
       if (!engine) return;
-      engine.setAirport(ap, wps, stars);
+      engine.setAirport(ap, wps, apStars);
       // Restore session after airport is set (so aircraft are in known airspace)
       if (pendingSessionRef.current) {
         engine.restoreSession(pendingSessionRef.current);
@@ -365,6 +370,8 @@ export function App() {
           onAltitudePreview={handleAltitudePreview}
           pendingCmdTypes={gameState.pendingCmdTypes[contextMenu.aircraft.id] ?? []}
           activeRunwayIds={gameState.activeRunwayIds}
+          waypoints={navPoints}
+          stars={stars}
         />
       )}
 

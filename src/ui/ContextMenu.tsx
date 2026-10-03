@@ -2,6 +2,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Aircraft, ATCCommand } from '@/types/aircraft';
 import type { Airport } from '@/types/airport';
+import type { STAR, Waypoint } from '@/types/navdata';
+import { distanceNM } from '@/utils/geo';
 import { getILSStatusForRunway } from '@/game/ILS';
 import { normaliseHdg, headingDiff } from '@/utils/aviation';
 import { AIRCRAFT_TYPES } from '@/game/constants';
@@ -21,6 +23,8 @@ interface Props {
   onAltitudePreview?: (aircraftId: string, alt: number | null) => void;
   pendingCmdTypes?: string[];   // command types queued but not yet executed
   activeRunwayIds?: string[];
+  waypoints?: Waypoint[];
+  stars?: STAR[];
 }
 
 const MENU_STYLE: React.CSSProperties = {
@@ -28,7 +32,7 @@ const MENU_STYLE: React.CSSProperties = {
   background: '#070f0a',
   border: '1px solid #1a5530',
   borderRadius: 4,
-  minWidth: 220,
+  width: 248,
   zIndex: 1000,
   fontFamily: '"Courier New", monospace',
   fontSize: 12,
@@ -58,7 +62,7 @@ const ITEM_STYLE: React.CSSProperties = {
 
 const ITEM_HOVER = '#0d2a18';
 
-export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPreview, onAltitudePreview, pendingCmdTypes = [], activeRunwayIds = [] }: Props) {
+export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPreview, onAltitudePreview, pendingCmdTypes = [], activeRunwayIds = [], waypoints = [], stars = [] }: Props) {
   const { aircraft: ac } = menu;
   const ref = useRef<HTMLDivElement>(null);
 
@@ -102,6 +106,16 @@ export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPrevie
     rwy.ils && (activeRunwayIds.length === 0 || activeRunwayIds.includes(rwy.id)),
   ) ?? [];
   const landPending = pendingCmdTypes.includes('land');
+
+  // Direct-to: restliche Punkte der eigenen STAR, dann die nächstgelegenen übrigen Wegpunkte
+  const star = ac.starId ? stars.find((st) => st.id === ac.starId) : undefined;
+  const starRest = star ? star.waypoints.slice(ac.starLegIndex ?? 0).slice(0, 6) : [];
+  const nearest = waypoints
+    .filter((w) => !starRest.some((sw) => sw.id === w.id))
+    .map((w) => ({ w, dist: distanceNM(ac.lat, ac.lng, w.lat, w.lng) }))
+    .sort((a, b) => a.dist - b.dist)
+    .slice(0, 6);
+  const sendDirect = (w: Waypoint) => cmd({ type: 'direct', waypointId: w.id, lat: w.lat, lng: w.lng });
 
   return (
     <div ref={ref} style={{ ...MENU_STYLE, left: x, top: y, maxHeight: `calc(100vh - ${y + 4}px)` }}>
@@ -223,6 +237,36 @@ export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPrevie
           </HoverItem>
         ))}
       </div>
+
+      {/* ── DIRECT TO ── */}
+      {(starRest.length > 0 || nearest.length > 0) && (
+        <>
+          <div style={SECTION_STYLE}>
+            DIRECT TO
+            <span style={{ float: 'right', fontSize: 10, fontWeight: 'normal', letterSpacing: 0,
+              color: pendingCmdTypes.includes('direct') ? '#ffaa00' : '#00cc66' }}>
+              {pendingCmdTypes.includes('direct') ? '⧖ ' : ''}
+              {ac.directTo ? `DCT ${ac.directTo.id}` : star && ac.state === 'enroute' ? (star.name ?? star.id) : ''}
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+            {starRest.map((w) => (
+              <HoverItem key={`s-${w.id}`} hoverBg={ITEM_HOVER} onClick={() => sendDirect(w)}
+                style={{ ...ITEM_STYLE, flex: '0 0 33%', justifyContent: 'center', fontSize: 11, padding: '5px 4px', color: '#b478ff', boxSizing: 'border-box' }}>
+                {w.id}
+              </HoverItem>
+            ))}
+            {nearest.map(({ w, dist }) => (
+              <HoverItem key={`n-${w.id}`} hoverBg={ITEM_HOVER} onClick={() => sendDirect(w)}
+                style={{ ...ITEM_STYLE, flex: '0 0 33%', justifyContent: 'center', gap: 4, fontSize: 11, padding: '5px 4px', boxSizing: 'border-box' }}>
+                <span>{w.id}</span>
+                <span style={{ color: '#2a7745', fontSize: 9 }}>{Math.round(dist)}</span>
+              </HoverItem>
+            ))}
+          </div>
+          <FixInput waypoints={waypoints} onSend={sendDirect} />
+        </>
+      )}
 
       {/* ── RUNWAY / ILS + LANDEFREIGABE ── */}
       {(ilsRunways.length > 0 || ac.clearedILS) && (
@@ -431,6 +475,33 @@ function ScrollableValue({ initial, step, stepShift, min, max, wrap, format, uni
       <span style={{ color: active ? '#00cc66' : '#2a5535', fontSize: 10 }}>
         {active ? 'SEND' : unit}
       </span>
+    </div>
+  );
+}
+
+// Freie Eingabe eines Wegpunkts (Kennung + Enter)
+function FixInput({ waypoints, onSend }: { waypoints: Waypoint[]; onSend: (w: Waypoint) => void }) {
+  const [value, setValue] = useState('');
+  const [error, setError] = useState(false);
+  const submit = () => {
+    const w = waypoints.find((wp) => wp.id === value.trim().toUpperCase());
+    if (w) onSend(w);
+    else setError(true);
+  };
+  return (
+    <div style={{ padding: '2px 8px 6px' }}>
+      <input
+        value={value}
+        placeholder="Fix eingeben + Enter"
+        spellCheck={false}
+        onChange={(e) => { setValue(e.target.value.toUpperCase()); setError(false); }}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); submit(); } }}
+        style={{
+          width: '100%', boxSizing: 'border-box', background: '#0a1a10',
+          border: `1px solid ${error ? '#ff4444' : '#1a4428'}`, color: '#00ff88',
+          fontFamily: '"Courier New", monospace', fontSize: 11, padding: '4px 6px', outline: 'none', borderRadius: 2,
+        }}
+      />
     </div>
   );
 }

@@ -32,6 +32,8 @@ export interface Aircraft {
   assignedRunway?: string;
   /** Landefreigabe erteilt; ohne sie startet der Flieger auf dem kurzen Endanflug durch */
   clearedToLand?: boolean;
+  /** Direct-to auf einen Wegpunkt außerhalb der eigenen STAR; nach Erreichen wird der Kurs gehalten */
+  directTo?: { id: string; lat: number; lng: number };
   conflict: boolean;
   warning: boolean;
   /** Forced turn direction for the current heading command; undefined = shortest path */
@@ -55,4 +57,5 @@ export type ATCCommand =
   | { type: 'altitude'; value: number }
   | { type: 'speed'; value: number }
   | { type: 'ils'; runwayId: string }
-  | { type: 'land' };
+  | { type: 'land' }
+  | { type: 'direct'; waypointId: string; lat: number; lng: number };

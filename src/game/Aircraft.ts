@@ -34,6 +34,14 @@ export function updateAircraft(
   let targetSpd = ac.targetSpeed;
   let turnDirection = ac.turnDirection;
   let starLegIndex = ac.starLegIndex ?? 0;
+  let directTo = ac.directTo;
+
+  // ── Direct-to (Wegpunkt außerhalb der STAR) ───────────────────────────────
+  if (!clearedILS && directTo) {
+    targetHdg = Math.round(bearingBetween(ac.lat, ac.lng, directTo.lat, directTo.lng));
+    // Am Punkt angekommen: aktuellen Kurs halten, Lotse übernimmt wieder
+    if (distanceNM(ac.lat, ac.lng, directTo.lat, directTo.lng) < 1.5) directTo = undefined;
+  }
 
   // ── STAR navigation (enroute, not ILS-cleared) ────────────────────────────
   if (!clearedILS && state === 'enroute' && star && starLegIndex < star.waypoints.length) {
@@ -165,6 +173,7 @@ export function updateAircraft(
     trail,
     turnDirection,
     starLegIndex,
+    directTo,
   };
 
   return { updated, remove: state === 'landed' };
