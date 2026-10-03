@@ -30,6 +30,8 @@ export interface Aircraft {
   trail: TrailPoint[];
   clearedILS: boolean;
   assignedRunway?: string;
+  /** Landefreigabe erteilt; ohne sie startet der Flieger auf dem kurzen Endanflug durch */
+  clearedToLand?: boolean;
   conflict: boolean;
   warning: boolean;
   /** Forced turn direction for the current heading command; undefined = shortest path */
@@ -52,4 +54,5 @@ export type ATCCommand =
   | { type: 'heading'; value: number; turnDirection?: 'left' | 'right' }
   | { type: 'altitude'; value: number }
   | { type: 'speed'; value: number }
-  | { type: 'ils'; runwayId: string };
+  | { type: 'ils'; runwayId: string }
+  | { type: 'land' };

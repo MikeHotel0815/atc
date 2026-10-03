@@ -811,6 +811,14 @@ export class RadarRenderer {
       ctx.fillText(ac.callsign, p.x + 12, p.y - 4);
       ctx.fillText(`FL${fl.toString().padStart(3, '0')} ${vs}`, p.x + 12, p.y + 8);
       ctx.fillText(`${spd}kt`, p.x + 12, p.y + 20);
+      if (ac.clearedILS && ac.assignedRunway) {
+        // ILS zugewiesen → "ILS25L"; mit Landefreigabe "LND25L"; etabliert ohne Freigabe orange
+        const tag = `${ac.clearedToLand ? 'LND' : 'ILS'}${ac.assignedRunway}`;
+        const tagX = p.x + 12 + ctx.measureText(`${spd}kt `).width;
+        ctx.fillStyle = ac.clearedToLand ? '#00ff88' : ac.state === 'established' ? '#ffaa00' : '#4488ff';
+        ctx.fillText(tag, tagX, p.y + 20);
+        ctx.fillStyle = color;
+      }
 
       // Wake turbulence badge for Heavy / Super
       if (wake === 'H' || wake === 'J') {

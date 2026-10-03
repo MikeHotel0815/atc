@@ -312,7 +312,7 @@ export function App() {
 
       {/* Commands */}
       <div style={{ color: '#446644', fontSize: 10, letterSpacing: 1 }}>COMMANDS</div>
-      <CommandPanel selected={selected} airport={airport} onCommand={handleCommand} />
+      <CommandPanel selected={selected} airport={airport} onCommand={handleCommand} activeRunwayIds={gameState.activeRunwayIds} />
 
       {/* Score / controls */}
       <ScorePanel

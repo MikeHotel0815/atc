@@ -140,7 +140,10 @@ export function updateAircraft(
   // Landing / go-around
   if (state === 'established' && runway) {
     const distToThreshold = distanceNM(newPos.lat, newPos.lng, runway.thresholdLat, runway.thresholdLng);
-    if (distToThreshold < 0.3 && altitudeFt < 500) {
+    if (distToThreshold < 1.0 && !ac.clearedToLand) {
+      // Keine Landefreigabe auf dem kurzen Endanflug → Durchstarten
+      state = 'goaround';
+    } else if (distToThreshold < 0.3 && altitudeFt < 500) {
       state = 'landed';
     } else if (distToThreshold < 1.0 && (altitudeFt > 1500 || speedKts > 180)) {
       state = 'goaround';

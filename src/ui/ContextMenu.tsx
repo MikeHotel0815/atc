@@ -33,7 +33,8 @@ const MENU_STYLE: React.CSSProperties = {
   fontFamily: '"Courier New", monospace',
   fontSize: 12,
   boxShadow: '0 4px 20px rgba(0,0,0,0.8)',
-  overflow: 'hidden',
+  overflowX: 'hidden',
+  overflowY: 'auto',
 };
 
 const SECTION_STYLE: React.CSSProperties = {
@@ -96,14 +97,14 @@ export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPrevie
   const typeData = AIRCRAFT_TYPES[ac.type];
   const approachSpd = typeData?.approachKts ?? 140;
 
-  const ilsRunways = airport?.runways.filter((rwy) => {
-    if (!rwy.ils) return false;
-    if (!activeRunwayIds.includes(rwy.id)) return false;
-    return getILSStatusForRunway(ac, rwy).canIntercept;
-  }) ?? [];
+  // Alle ILS-Bahnen der aktiven Richtung (ohne aktive Auswahl: alle ILS-Bahnen)
+  const ilsRunways = airport?.runways.filter((rwy) =>
+    rwy.ils && (activeRunwayIds.length === 0 || activeRunwayIds.includes(rwy.id)),
+  ) ?? [];
+  const landPending = pendingCmdTypes.includes('land');
 
   return (
-    <div ref={ref} style={{ ...MENU_STYLE, left: x, top: y }}>
+    <div ref={ref} style={{ ...MENU_STYLE, left: x, top: y, maxHeight: `calc(100vh - ${y + 4}px)` }}>
       {/* Header */}
       <div style={{
         padding: '7px 12px', background: '#0a1f12', color: '#00ff88',
@@ -223,11 +224,11 @@ export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPrevie
         ))}
       </div>
 
-      {/* ── ILS ── */}
-      {(ac.clearedILS || ilsRunways.length > 0 || pendingCmdTypes.includes('ils')) && (
+      {/* ── RUNWAY / ILS + LANDEFREIGABE ── */}
+      {(ilsRunways.length > 0 || ac.clearedILS) && (
         <>
           <div style={SECTION_STYLE}>
-            ILS APPROACH
+            RUNWAY / ILS
             {(ac.clearedILS || pendingCmdTypes.includes('ils')) && (
               <span style={{ float: 'right', fontSize: 10, fontWeight: 'normal', letterSpacing: 0,
                 color: pendingCmdTypes.includes('ils') ? '#ffaa00' : '#00cc66' }}>
@@ -237,15 +238,38 @@ export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPrevie
               </span>
             )}
           </div>
-          {ilsRunways.map((rwy) => (
-            <HoverItem key={rwy.id} style={ITEM_STYLE} hoverBg={ITEM_HOVER}
-              onClick={() => cmd({ type: 'ils', runwayId: rwy.id })}>
-              <span>Cleared ILS RWY {rwy.id}</span>
-              {ac.clearedILS && ac.assignedRunway === rwy.id && (
-                <span style={{ color: '#00cc66', fontSize: 10 }}>ACTIVE</span>
-              )}
-            </HoverItem>
-          ))}
+          {ilsRunways.map((rwy) => {
+            const status = getILSStatusForRunway(ac, rwy);
+            const assigned = ac.clearedILS && ac.assignedRunway === rwy.id;
+            return (
+              <HoverItem key={rwy.id} style={ITEM_STYLE} hoverBg={ITEM_HOVER}
+                onClick={() => cmd({ type: 'ils', runwayId: rwy.id })}>
+                <span>Cleared ILS RWY {rwy.id}</span>
+                {assigned ? (
+                  <span style={{ color: '#00cc66', fontSize: 10 }}>ACTIVE</span>
+                ) : (
+                  // Abstand zur Schwelle; gedimmt, wenn der Localizer gerade nicht erfliegbar ist
+                  <span style={{ color: status.canIntercept ? '#00cc66' : '#2a5535', fontSize: 10 }}>
+                    {Math.round(status.distanceToThresholdNM)} NM
+                  </span>
+                )}
+              </HoverItem>
+            );
+          })}
+          {ac.clearedILS && ac.assignedRunway && (
+            ac.clearedToLand ? (
+              <div style={{ ...ITEM_STYLE, cursor: 'default', color: '#00ff88' }}>
+                <span>Cleared to land RWY {ac.assignedRunway}</span>
+                <span style={{ fontSize: 10 }}>✓</span>
+              </div>
+            ) : (
+              <HoverItem style={{ ...ITEM_STYLE, color: landPending ? '#ffaa00' : '#ffcc44' }} hoverBg={ITEM_HOVER}
+                onClick={() => cmd({ type: 'land' })}>
+                <span>Cleared to land RWY {ac.assignedRunway}</span>
+                <span style={{ fontSize: 10 }}>{landPending ? '⧖' : 'LAND'}</span>
+              </HoverItem>
+            )
+          )}
         </>
       )}
     </div>

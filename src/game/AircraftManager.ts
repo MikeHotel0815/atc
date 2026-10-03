@@ -91,7 +91,7 @@ export class AircraftManager {
     let updated = { ...ac };
     switch (cmd.type) {
       case 'heading':
-        updated = { ...updated, targetHeading: cmd.value, turnDirection: cmd.turnDirection, state: ac.state === 'enroute' ? 'vectored' : ac.state };
+        updated = { ...updated, targetHeading: cmd.value, turnDirection: cmd.turnDirection, state: ac.state === 'enroute' || ac.state === 'goaround' ? 'vectored' : ac.state };
         break;
       case 'altitude':
         updated = { ...updated, targetAltitude: cmd.value };
@@ -106,11 +106,17 @@ export class AircraftManager {
             ...updated,
             clearedILS: true,
             assignedRunway: cmd.runwayId,
-            state: ac.state === 'enroute' || ac.state === 'vectored' ? 'vectored' : ac.state,
+            // Bahnwechsel hebt eine erteilte Landefreigabe auf
+            clearedToLand: ac.assignedRunway === cmd.runwayId ? ac.clearedToLand : false,
+            state: ac.state === 'enroute' || ac.state === 'vectored' || ac.state === 'goaround' ? 'vectored' : ac.state,
           };
         }
         break;
       }
+      case 'land':
+        // Landefreigabe nur für einen Flieger mit zugewiesenem ILS
+        if (ac.clearedILS && ac.assignedRunway) updated = { ...updated, clearedToLand: true };
+        break;
     }
     this.aircraft.set(id, updated);
   }
@@ -148,6 +154,20 @@ export class AircraftManager {
         } else if (updated.state === 'goaround') {
           this.emit({ type: 'goaround', callsign: updated.callsign });
         }
+      } else if (updated.state === 'goaround' && ac.state !== 'goaround') {
+        // Durchstarten: Freigaben weg, Bahnkurs halten, auf 4000 ft steigen – der Lotse muss neu führen
+        this.emit({ type: 'goaround', callsign: updated.callsign });
+        const typeData = AIRCRAFT_TYPES[updated.type];
+        this.aircraft.set(id, {
+          ...updated,
+          clearedILS: false,
+          clearedToLand: false,
+          assignedRunway: undefined,
+          targetHeading: runway ? Math.round(runway.heading) : updated.headingDeg,
+          targetAltitude: Math.max(4000, Math.round(updated.altitudeFt / 1000) * 1000),
+          targetSpeed: Math.min(200, typeData?.cruiseKts ?? 200),
+          turnDirection: undefined,
+        });
       } else {
         this.aircraft.set(id, updated);
       }
