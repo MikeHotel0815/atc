@@ -15,13 +15,9 @@ export interface STARLeg {
 
 export interface STAR {
   id: string;
+  name?: string;    // Prozedurname für die Anzeige, falls id die Bahn enthält (z. B. "KERA6A/25L")
   icao: string;
   runway: string;   // e.g. "25L" or "ALL"
   waypoints: Waypoint[];
   legs: STARLeg[];
-}
-
-export interface NavDatabase {
-  waypoints: Record<string, Waypoint>;
-  stars: STAR[];
 }

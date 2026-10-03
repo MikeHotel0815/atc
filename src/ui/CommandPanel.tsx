@@ -8,6 +8,7 @@ interface Props {
   selected: Aircraft | undefined;
   airport: Airport | null;
   onCommand: (id: string, cmd: ATCCommand) => void;
+  activeRunwayIds?: string[];
 }
 
 const INPUT_STYLE: React.CSSProperties = {
@@ -43,7 +44,7 @@ const LABEL_STYLE: React.CSSProperties = {
   display: 'block',
 };
 
-export function CommandPanel({ selected, airport, onCommand }: Props) {
+export function CommandPanel({ selected, airport, onCommand, activeRunwayIds = [] }: Props) {
   const [hdg, setHdg] = useState('');
   const [alt, setAlt] = useState('');
   const [spd, setSpd] = useState('');
@@ -88,11 +89,10 @@ export function CommandPanel({ selected, airport, onCommand }: Props) {
     }
   };
 
-  const ilsRunways = airport?.runways.filter((rwy) => {
-    if (!rwy.ils) return false;
-    const status = getILSStatusForRunway(selected, rwy);
-    return status.canIntercept;
-  }) ?? [];
+  // Alle ILS-Bahnen der aktiven Richtung (ohne aktive Auswahl: alle ILS-Bahnen)
+  const ilsRunways = airport?.runways.filter((rwy) =>
+    rwy.ils && (activeRunwayIds.length === 0 || activeRunwayIds.includes(rwy.id)),
+  ) ?? [];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -171,7 +171,7 @@ export function CommandPanel({ selected, airport, onCommand }: Props) {
       {/* ILS clearance */}
       {ilsRunways.length > 0 && (
         <div>
-          <label style={LABEL_STYLE}>ILS APPROACH</label>
+          <label style={LABEL_STYLE}>RUNWAY / ILS</label>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
             {ilsRunways.map((rwy) => (
               <button
@@ -186,8 +186,27 @@ export function CommandPanel({ selected, airport, onCommand }: Props) {
                 }}
               >
                 {selected.assignedRunway === rwy.id ? '✓ ' : ''}ILS RWY {rwy.id}
+                {selected.assignedRunway !== rwy.id && (
+                  <span style={{ float: 'right', opacity: getILSStatusForRunway(selected, rwy).canIntercept ? 1 : 0.5 }}>
+                    {Math.round(getILSStatusForRunway(selected, rwy).distanceToThresholdNM)} NM
+                  </span>
+                )}
               </button>
             ))}
+            {selected.clearedILS && selected.assignedRunway && (
+              <button
+                onClick={() => !selected.clearedToLand && onCommand(selected.id, { type: 'land' })}
+                style={{
+                  ...BTN_STYLE,
+                  marginTop: 0,
+                  borderColor: selected.clearedToLand ? '#00ff88' : '#ffcc44',
+                  color: selected.clearedToLand ? '#00ff88' : '#ffcc44',
+                  cursor: selected.clearedToLand ? 'default' : 'pointer',
+                }}
+              >
+                {selected.clearedToLand ? '✓ ' : ''}CLEARED TO LAND RWY {selected.assignedRunway}
+              </button>
+            )}
           </div>
         </div>
       )}

@@ -16,10 +16,24 @@ import {
 type EventType = 'landing' | 'goaround' | 'conflict' | 'warning' | 'clear';
 type EventHandler = (event: { type: EventType; callsign?: string; pair?: ConflictPair }) => void;
 
+const SPAWN_ATTEMPTS = 20;
+const SPAWN_MIN_LATERAL_NM = 8;
+const SPAWN_MIN_VERTICAL_FT = 2000;
+const SPAWN_RETRY_S = 10;
+
+interface SpawnCandidate {
+  lat: number;
+  lng: number;
+  initHdg: number;
+  initAlt: number;
+  starId?: string;
+}
+
 export class AircraftManager {
   private aircraft: Map<string, Aircraft> = new Map();
   private airport: Airport | null = null;
   private stars: STAR[] = [];
+  private spawnStars: STAR[] = []; // STARs der aktiven Bahnen
   private listeners: EventHandler[] = [];
   private nextSpawnIn: number;
   private usedCallsigns = new Set<string>();
@@ -42,6 +56,11 @@ export class AircraftManager {
   setAirport(airport: Airport, stars: STAR[] = []): void {
     this.airport = airport;
     this.stars = stars;
+    this.spawnStars = stars;
+  }
+
+  setSpawnStars(stars: STAR[]): void {
+    this.spawnStars = stars;
   }
 
   on(handler: EventHandler): void {
@@ -72,7 +91,7 @@ export class AircraftManager {
     let updated = { ...ac };
     switch (cmd.type) {
       case 'heading':
-        updated = { ...updated, targetHeading: cmd.value, turnDirection: cmd.turnDirection, state: ac.state === 'enroute' ? 'vectored' : ac.state };
+        updated = { ...updated, targetHeading: cmd.value, turnDirection: cmd.turnDirection, directTo: undefined, state: ac.state === 'enroute' || ac.state === 'goaround' ? 'vectored' : ac.state };
         break;
       case 'altitude':
         updated = { ...updated, targetAltitude: cmd.value };
@@ -87,11 +106,31 @@ export class AircraftManager {
             ...updated,
             clearedILS: true,
             assignedRunway: cmd.runwayId,
-            state: ac.state === 'enroute' || ac.state === 'vectored' ? 'vectored' : ac.state,
+            directTo: undefined,
+            // Bahnwechsel hebt eine erteilte Landefreigabe auf
+            clearedToLand: ac.assignedRunway === cmd.runwayId ? ac.clearedToLand : false,
+            state: ac.state === 'enroute' || ac.state === 'vectored' || ac.state === 'goaround' ? 'vectored' : ac.state,
           };
         }
         break;
       }
+      case 'direct': {
+        // Direct-to hebt eine Anflugfreigabe auf; der Flieger fliegt den Punkt direkt an
+        const cleared = { ...updated, clearedILS: false, clearedToLand: false, assignedRunway: undefined, turnDirection: undefined };
+        const star = ac.starId ? this.stars.find((s) => s.id === ac.starId) : undefined;
+        const starIdx = star ? star.waypoints.findIndex((w) => w.id === cmd.waypointId) : -1;
+        if (starIdx >= 0) {
+          // Punkt liegt auf der eigenen STAR → Abkürzung, danach geht es mit der STAR weiter
+          updated = { ...cleared, state: 'enroute', starLegIndex: starIdx, directTo: undefined };
+        } else {
+          updated = { ...cleared, state: 'vectored', directTo: { id: cmd.waypointId, lat: cmd.lat, lng: cmd.lng } };
+        }
+        break;
+      }
+      case 'land':
+        // Landefreigabe nur für einen Flieger mit zugewiesenem ILS
+        if (ac.clearedILS && ac.assignedRunway) updated = { ...updated, clearedToLand: true };
+        break;
     }
     this.aircraft.set(id, updated);
   }
@@ -108,8 +147,7 @@ export class AircraftManager {
     // Spawn timer
     this.nextSpawnIn -= dt;
     if (this.nextSpawnIn <= 0 && this.aircraft.size < MAX_AIRCRAFT) {
-      this.spawnAircraft();
-      this.nextSpawnIn = this.randomSpawnInterval();
+      this.nextSpawnIn = this.spawnAircraft() ? this.randomSpawnInterval() : SPAWN_RETRY_S;
     }
 
     // Update all aircraft
@@ -130,6 +168,20 @@ export class AircraftManager {
         } else if (updated.state === 'goaround') {
           this.emit({ type: 'goaround', callsign: updated.callsign });
         }
+      } else if (updated.state === 'goaround' && ac.state !== 'goaround') {
+        // Durchstarten: Freigaben weg, Bahnkurs halten, auf 4000 ft steigen – der Lotse muss neu führen
+        this.emit({ type: 'goaround', callsign: updated.callsign });
+        const typeData = AIRCRAFT_TYPES[updated.type];
+        this.aircraft.set(id, {
+          ...updated,
+          clearedILS: false,
+          clearedToLand: false,
+          assignedRunway: undefined,
+          targetHeading: runway ? Math.round(runway.heading) : updated.headingDeg,
+          targetAltitude: Math.max(4000, Math.round(updated.altitudeFt / 1000) * 1000),
+          targetSpeed: Math.min(200, typeData?.cruiseKts ?? 200),
+          turnDirection: undefined,
+        });
       } else {
         this.aircraft.set(id, updated);
       }
@@ -199,23 +251,16 @@ export class AircraftManager {
     }
   }
 
-  private spawnAircraft(): void {
-    if (!this.airport) return;
-    const types = Object.keys(AIRCRAFT_TYPES);
-    const type = types[Math.floor(Math.random() * types.length)];
-    const typeData = AIRCRAFT_TYPES[type];
-    const callsign = this.generateCallsign();
-    const id = `${callsign}-${Date.now()}`;
-
+  private spawnCandidate(): SpawnCandidate {
+    const airport = this.airport!;
     let lat: number, lng: number, initHdg: number;
-    let starId: string | undefined;
-    const starLegIndex = 0;
+    let star: STAR | undefined;
 
-    if (this.stars.length > 0) {
+    if (this.spawnStars.length > 0) {
       // Pick a random STAR and spawn 15–20 NM before its entry fix
-      const star = this.stars[Math.floor(Math.random() * this.stars.length)];
+      star = this.spawnStars[Math.floor(Math.random() * this.spawnStars.length)];
       const entryFix = star.waypoints[0];
-      const nextFix = star.waypoints[1] ?? { lat: this.airport.lat, lng: this.airport.lng };
+      const nextFix = star.waypoints[1] ?? { lat: airport.lat, lng: airport.lng };
       // Inbound track: entry → next; spawn on reciprocal (behind the fix)
       const inboundBearing = bearingBetween(entryFix.lat, entryFix.lng, nextFix.lat, nextFix.lng);
       const spawnDist = 15 + Math.random() * 5;
@@ -223,20 +268,55 @@ export class AircraftManager {
       lat = spawnPos.lat;
       lng = spawnPos.lng;
       initHdg = Math.round(bearingBetween(lat, lng, entryFix.lat, entryFix.lng));
-      starId = star.id;
     } else {
       const pos = this.randomEntryPoint();
       lat = pos.lat;
       lng = pos.lng;
-      initHdg = Math.round(bearingBetween(lat, lng, this.airport.lat, this.airport.lng));
+      initHdg = Math.round(bearingBetween(lat, lng, airport.lat, airport.lng));
     }
 
     // Altitude: at or above first STAR leg restriction (or random FL100–FL180)
-    const star = this.stars.find((s) => s.id === starId);
     const firstAltRestr = star?.legs[0]?.altRestrictionFt;
     const initAlt = firstAltRestr
-      ? Math.max(firstAltRestr, firstAltRestr + Math.floor(Math.random() * 2000))
+      ? firstAltRestr + Math.floor(Math.random() * 2000)
       : 10000 + Math.floor(Math.random() * 8000);
+
+    return { lat, lng, initHdg, initAlt, starId: star?.id };
+  }
+
+  /** ≥ 1, wenn der Kandidat zu allen Flugzeugen seitlich oder vertikal genug Abstand hat */
+  private separationScore(c: SpawnCandidate): number {
+    let score = Infinity;
+    for (const ac of this.aircraft.values()) {
+      const lateral = distanceNM(c.lat, c.lng, ac.lat, ac.lng) / SPAWN_MIN_LATERAL_NM;
+      const vertical = Math.abs(c.initAlt - ac.altitudeFt) / SPAWN_MIN_VERTICAL_FT;
+      score = Math.min(score, Math.max(lateral, vertical));
+    }
+    return score;
+  }
+
+  /** Returns false if no conflict-free spawn position was found */
+  private spawnAircraft(): boolean {
+    if (!this.airport) return false;
+    // Mehrere Kandidaten würfeln und den ersten mit sicherem Abstand zum Verkehr nehmen
+    let spawn: SpawnCandidate | null = null;
+    let bestSep = -1;
+    for (let i = 0; i < SPAWN_ATTEMPTS; i++) {
+      const cand = this.spawnCandidate();
+      const sep = this.separationScore(cand);
+      if (sep > bestSep) { spawn = cand; bestSep = sep; }
+      if (sep >= 1) break;
+    }
+    // Kein freier Einstieg → später erneut versuchen statt einen Konflikt zu erzeugen
+    if (!spawn || bestSep < 1) return false;
+    const { lat, lng, initHdg, initAlt, starId } = spawn;
+    const starLegIndex = 0;
+
+    const types = Object.keys(AIRCRAFT_TYPES);
+    const type = types[Math.floor(Math.random() * types.length)];
+    const typeData = AIRCRAFT_TYPES[type];
+    const callsign = this.generateCallsign();
+    const id = `${callsign}-${Date.now()}`;
 
     const ac = createAircraft({
       id,
@@ -258,6 +338,7 @@ export class AircraftManager {
     });
 
     this.aircraft.set(id, ac);
+    return true;
   }
 
   private randomEntryPoint(): { lat: number; lng: number } {

@@ -34,6 +34,14 @@ export function updateAircraft(
   let targetSpd = ac.targetSpeed;
   let turnDirection = ac.turnDirection;
   let starLegIndex = ac.starLegIndex ?? 0;
+  let directTo = ac.directTo;
+
+  // ── Direct-to (Wegpunkt außerhalb der STAR) ───────────────────────────────
+  if (!clearedILS && directTo) {
+    targetHdg = Math.round(bearingBetween(ac.lat, ac.lng, directTo.lat, directTo.lng));
+    // Am Punkt angekommen: aktuellen Kurs halten, Lotse übernimmt wieder
+    if (distanceNM(ac.lat, ac.lng, directTo.lat, directTo.lng) < 1.5) directTo = undefined;
+  }
 
   // ── STAR navigation (enroute, not ILS-cleared) ────────────────────────────
   if (!clearedILS && state === 'enroute' && star && starLegIndex < star.waypoints.length) {
@@ -140,7 +148,10 @@ export function updateAircraft(
   // Landing / go-around
   if (state === 'established' && runway) {
     const distToThreshold = distanceNM(newPos.lat, newPos.lng, runway.thresholdLat, runway.thresholdLng);
-    if (distToThreshold < 0.3 && altitudeFt < 500) {
+    if (distToThreshold < 1.0 && !ac.clearedToLand) {
+      // Keine Landefreigabe auf dem kurzen Endanflug → Durchstarten
+      state = 'goaround';
+    } else if (distToThreshold < 0.3 && altitudeFt < 500) {
       state = 'landed';
     } else if (distToThreshold < 1.0 && (altitudeFt > 1500 || speedKts > 180)) {
       state = 'goaround';
@@ -162,6 +173,7 @@ export function updateAircraft(
     trail,
     turnDirection,
     starLegIndex,
+    directTo,
   };
 
   return { updated, remove: state === 'landed' };

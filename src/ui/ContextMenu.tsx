@@ -1,7 +1,9 @@
 // filepath: src/ui/ContextMenu.tsx
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Aircraft, ATCCommand } from '@/types/aircraft';
 import type { Airport } from '@/types/airport';
+import type { STAR, Waypoint } from '@/types/navdata';
+import { distanceNM } from '@/utils/geo';
 import { getILSStatusForRunway } from '@/game/ILS';
 import { normaliseHdg, headingDiff } from '@/utils/aviation';
 import { AIRCRAFT_TYPES } from '@/game/constants';
@@ -21,6 +23,8 @@ interface Props {
   onAltitudePreview?: (aircraftId: string, alt: number | null) => void;
   pendingCmdTypes?: string[];   // command types queued but not yet executed
   activeRunwayIds?: string[];
+  waypoints?: Waypoint[];
+  stars?: STAR[];
 }
 
 const MENU_STYLE: React.CSSProperties = {
@@ -28,12 +32,13 @@ const MENU_STYLE: React.CSSProperties = {
   background: '#070f0a',
   border: '1px solid #1a5530',
   borderRadius: 4,
-  minWidth: 220,
+  width: 248,
   zIndex: 1000,
   fontFamily: '"Courier New", monospace',
   fontSize: 12,
   boxShadow: '0 4px 20px rgba(0,0,0,0.8)',
-  overflow: 'hidden',
+  overflowX: 'hidden',
+  overflowY: 'auto',
 };
 
 const SECTION_STYLE: React.CSSProperties = {
@@ -57,7 +62,7 @@ const ITEM_STYLE: React.CSSProperties = {
 
 const ITEM_HOVER = '#0d2a18';
 
-export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPreview, onAltitudePreview, pendingCmdTypes = [], activeRunwayIds = [] }: Props) {
+export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPreview, onAltitudePreview, pendingCmdTypes = [], activeRunwayIds = [], waypoints = [], stars = [] }: Props) {
   const { aircraft: ac } = menu;
   const ref = useRef<HTMLDivElement>(null);
 
@@ -96,14 +101,24 @@ export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPrevie
   const typeData = AIRCRAFT_TYPES[ac.type];
   const approachSpd = typeData?.approachKts ?? 140;
 
-  const ilsRunways = airport?.runways.filter((rwy) => {
-    if (!rwy.ils) return false;
-    if (!activeRunwayIds.includes(rwy.id)) return false;
-    return getILSStatusForRunway(ac, rwy).canIntercept;
-  }) ?? [];
+  // Alle ILS-Bahnen der aktiven Richtung (ohne aktive Auswahl: alle ILS-Bahnen)
+  const ilsRunways = airport?.runways.filter((rwy) =>
+    rwy.ils && (activeRunwayIds.length === 0 || activeRunwayIds.includes(rwy.id)),
+  ) ?? [];
+  const landPending = pendingCmdTypes.includes('land');
+
+  // Direct-to: restliche Punkte der eigenen STAR, dann die nächstgelegenen übrigen Wegpunkte
+  const star = ac.starId ? stars.find((st) => st.id === ac.starId) : undefined;
+  const starRest = star ? star.waypoints.slice(ac.starLegIndex ?? 0).slice(0, 6) : [];
+  const nearest = waypoints
+    .filter((w) => !starRest.some((sw) => sw.id === w.id))
+    .map((w) => ({ w, dist: distanceNM(ac.lat, ac.lng, w.lat, w.lng) }))
+    .sort((a, b) => a.dist - b.dist)
+    .slice(0, 6);
+  const sendDirect = (w: Waypoint) => cmd({ type: 'direct', waypointId: w.id, lat: w.lat, lng: w.lng });
 
   return (
-    <div ref={ref} style={{ ...MENU_STYLE, left: x, top: y }}>
+    <div ref={ref} style={{ ...MENU_STYLE, left: x, top: y, maxHeight: `calc(100vh - ${y + 4}px)` }}>
       {/* Header */}
       <div style={{
         padding: '7px 12px', background: '#0a1f12', color: '#00ff88',
@@ -170,16 +185,16 @@ export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPrevie
         />
       </div>
       <ScrollableValue
-        initial={Math.round(ac.altitudeFt / 100) * 100}
-        step={100} stepShift={1000}
-        min={0} max={41000}
+        initial={Math.round(ac.altitudeFt / 1000) * 1000}
+        step={1000} stepShift={100}
+        min={1000} max={41000}
         format={(v) => `FL${String(v / 100).padStart(3, '0')}`}
         unit="ALT"
         onSend={(v) => cmd({ type: 'altitude', value: v })}
         onPreview={(v) => onAltitudePreview?.(ac.id, v)}
       />
       <div style={{ display: 'flex', flexWrap: 'wrap' }}>
-        {[10000, 8000, 6000, 4000, 2000].map((alt) => (
+        {[12000, 10000, 8000, 6000, 5000, 4000].map((alt) => (
           <HoverItem
             key={alt}
             style={{ ...ITEM_STYLE, flex: '0 0 33%', justifyContent: 'center', fontSize: 11, padding: '5px 4px' }}
@@ -223,11 +238,41 @@ export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPrevie
         ))}
       </div>
 
-      {/* ── ILS ── */}
-      {(ac.clearedILS || ilsRunways.length > 0 || pendingCmdTypes.includes('ils')) && (
+      {/* ── DIRECT TO ── */}
+      {(starRest.length > 0 || nearest.length > 0) && (
         <>
           <div style={SECTION_STYLE}>
-            ILS APPROACH
+            DIRECT TO
+            <span style={{ float: 'right', fontSize: 10, fontWeight: 'normal', letterSpacing: 0,
+              color: pendingCmdTypes.includes('direct') ? '#ffaa00' : '#00cc66' }}>
+              {pendingCmdTypes.includes('direct') ? '⧖ ' : ''}
+              {ac.directTo ? `DCT ${ac.directTo.id}` : star && ac.state === 'enroute' ? (star.name ?? star.id) : ''}
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+            {starRest.map((w) => (
+              <HoverItem key={`s-${w.id}`} hoverBg={ITEM_HOVER} onClick={() => sendDirect(w)}
+                style={{ ...ITEM_STYLE, flex: '0 0 33%', justifyContent: 'center', fontSize: 11, padding: '5px 4px', color: '#b478ff', boxSizing: 'border-box' }}>
+                {w.id}
+              </HoverItem>
+            ))}
+            {nearest.map(({ w, dist }) => (
+              <HoverItem key={`n-${w.id}`} hoverBg={ITEM_HOVER} onClick={() => sendDirect(w)}
+                style={{ ...ITEM_STYLE, flex: '0 0 33%', justifyContent: 'center', gap: 4, fontSize: 11, padding: '5px 4px', boxSizing: 'border-box' }}>
+                <span>{w.id}</span>
+                <span style={{ color: '#2a7745', fontSize: 9 }}>{Math.round(dist)}</span>
+              </HoverItem>
+            ))}
+          </div>
+          <FixInput waypoints={waypoints} onSend={sendDirect} />
+        </>
+      )}
+
+      {/* ── RUNWAY / ILS + LANDEFREIGABE ── */}
+      {(ilsRunways.length > 0 || ac.clearedILS) && (
+        <>
+          <div style={SECTION_STYLE}>
+            RUNWAY / ILS
             {(ac.clearedILS || pendingCmdTypes.includes('ils')) && (
               <span style={{ float: 'right', fontSize: 10, fontWeight: 'normal', letterSpacing: 0,
                 color: pendingCmdTypes.includes('ils') ? '#ffaa00' : '#00cc66' }}>
@@ -237,15 +282,38 @@ export function ContextMenu({ menu, airport, onCommand, onClose, onHeadingPrevie
               </span>
             )}
           </div>
-          {ilsRunways.map((rwy) => (
-            <HoverItem key={rwy.id} style={ITEM_STYLE} hoverBg={ITEM_HOVER}
-              onClick={() => cmd({ type: 'ils', runwayId: rwy.id })}>
-              <span>Cleared ILS RWY {rwy.id}</span>
-              {ac.clearedILS && ac.assignedRunway === rwy.id && (
-                <span style={{ color: '#00cc66', fontSize: 10 }}>ACTIVE</span>
-              )}
-            </HoverItem>
-          ))}
+          {ilsRunways.map((rwy) => {
+            const status = getILSStatusForRunway(ac, rwy);
+            const assigned = ac.clearedILS && ac.assignedRunway === rwy.id;
+            return (
+              <HoverItem key={rwy.id} style={ITEM_STYLE} hoverBg={ITEM_HOVER}
+                onClick={() => cmd({ type: 'ils', runwayId: rwy.id })}>
+                <span>Cleared ILS RWY {rwy.id}</span>
+                {assigned ? (
+                  <span style={{ color: '#00cc66', fontSize: 10 }}>ACTIVE</span>
+                ) : (
+                  // Abstand zur Schwelle; gedimmt, wenn der Localizer gerade nicht erfliegbar ist
+                  <span style={{ color: status.canIntercept ? '#00cc66' : '#2a5535', fontSize: 10 }}>
+                    {Math.round(status.distanceToThresholdNM)} NM
+                  </span>
+                )}
+              </HoverItem>
+            );
+          })}
+          {ac.clearedILS && ac.assignedRunway && (
+            ac.clearedToLand ? (
+              <div style={{ ...ITEM_STYLE, cursor: 'default', color: '#00ff88' }}>
+                <span>Cleared to land RWY {ac.assignedRunway}</span>
+                <span style={{ fontSize: 10 }}>✓</span>
+              </div>
+            ) : (
+              <HoverItem style={{ ...ITEM_STYLE, color: landPending ? '#ffaa00' : '#ffcc44' }} hoverBg={ITEM_HOVER}
+                onClick={() => cmd({ type: 'land' })}>
+                <span>Cleared to land RWY {ac.assignedRunway}</span>
+                <span style={{ fontSize: 10 }}>{landPending ? '⧖' : 'LAND'}</span>
+              </HoverItem>
+            )
+          )}
         </>
       )}
     </div>
@@ -320,6 +388,25 @@ function ScrollableValue({ initial, step, stepShift, min, max, wrap, format, uni
     }
   }, [active]);
 
+  /** Wert um d ändern; aktiviert das Feld beim ersten Mal (Mausrad, ▲/▼-Tasten, −/+-Buttons) */
+  const adjust = useCallback((d: number) => {
+    if (!active) {
+      // Auto-activate from current initial value (reset state to initial first)
+      rawDeltaRef.current = 0;
+      setValue(initial);
+      setActive(true);
+      onPreviewRef.current?.(initial);
+      onPreviewDeltaRef.current?.(0);
+    }
+    rawDeltaRef.current += d;
+    setValue((prev) => {
+      const next = (active ? prev : initial) + d;
+      if (wrap) return ((next - 1 + 360) % 360) + 1;
+      return Math.max(min, Math.min(max, next));
+    });
+    onPreviewDeltaRef.current?.(rawDeltaRef.current);
+  }, [active, initial, min, max, wrap]);
+
   // Scroll wheel: activate on first scroll, then adjust
   useEffect(() => {
     const el = ref.current;
@@ -327,27 +414,26 @@ function ScrollableValue({ initial, step, stepShift, min, max, wrap, format, uni
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      if (!active) {
-        // Auto-activate from current initial value (reset state to initial first)
-        rawDeltaRef.current = 0;
-        setValue(initial);
-        setActive(true);
-        onPreviewRef.current?.(initial);
-        onPreviewDeltaRef.current?.(0);
-      }
       const s = e.shiftKey ? stepShift : step;
-      const d = e.deltaY > 0 ? -s : s;
-      rawDeltaRef.current += d;
-      setValue((prev) => {
-        const next = prev + d;
-        if (wrap) return ((next - 1 + 360) % 360) + 1;
-        return Math.max(min, Math.min(max, next));
-      });
-      onPreviewDeltaRef.current?.(rawDeltaRef.current);
+      adjust(e.deltaY > 0 ? -s : s);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [active, initial, step, stepShift, min, max, wrap]);
+  }, [adjust, step, stepShift]);
+
+  // Pfeiltasten ↑/↓ ändern den aktiven Wert (Shift = feine Schritte)
+  useEffect(() => {
+    if (!active) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      e.preventDefault();
+      e.stopPropagation();
+      const s = e.shiftKey ? stepShift : step;
+      adjust(e.key === 'ArrowUp' ? s : -s);
+    };
+    document.addEventListener('keydown', onKey, { capture: true });
+    return () => document.removeEventListener('keydown', onKey, { capture: true });
+  }, [active, adjust, step, stepShift]);
 
   // ENTER key sends the value when active
   useEffect(() => {
@@ -379,16 +465,60 @@ function ScrollableValue({ initial, step, stepShift, min, max, wrap, format, uni
         userSelect: 'none',
         transition: 'background 0.1s',
       }}
-      title={active ? 'Scroll to adjust · Click to send' : 'Click to activate'}
+      title={active ? 'Mausrad, ↑/↓ oder −/+ zum Ändern · Klick oder Enter zum Senden' : 'Klick zum Aktivieren · Mausrad oder −/+ zum Ändern'}
     >
-      <span style={{ color: active ? '#00cc66' : '#2a5535', fontSize: 10 }}>↕</span>
+      <StepButton label="−" onClick={(e) => adjust(-(e.shiftKey ? stepShift : step))} />
       <span style={{ color: active ? '#00ff88' : '#446655', fontSize: 20, fontWeight: 'bold', letterSpacing: 2 }}>
         {format(value)}
       </span>
+      <StepButton label="+" onClick={(e) => adjust(e.shiftKey ? stepShift : step)} />
       <span style={{ color: active ? '#00cc66' : '#2a5535', fontSize: 10 }}>
         {active ? 'SEND' : unit}
       </span>
     </div>
+  );
+}
+
+// Freie Eingabe eines Wegpunkts (Kennung + Enter)
+function FixInput({ waypoints, onSend }: { waypoints: Waypoint[]; onSend: (w: Waypoint) => void }) {
+  const [value, setValue] = useState('');
+  const [error, setError] = useState(false);
+  const submit = () => {
+    const w = waypoints.find((wp) => wp.id === value.trim().toUpperCase());
+    if (w) onSend(w);
+    else setError(true);
+  };
+  return (
+    <div style={{ padding: '2px 8px 6px' }}>
+      <input
+        value={value}
+        placeholder="Fix eingeben + Enter"
+        spellCheck={false}
+        onChange={(e) => { setValue(e.target.value.toUpperCase()); setError(false); }}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); submit(); } }}
+        style={{
+          width: '100%', boxSizing: 'border-box', background: '#0a1a10',
+          border: `1px solid ${error ? '#ff4444' : '#1a4428'}`, color: '#00ff88',
+          fontFamily: '"Courier New", monospace', fontSize: 11, padding: '4px 6px', outline: 'none', borderRadius: 2,
+        }}
+      />
+    </div>
+  );
+}
+
+// −/+ Button im Spinbox-Feld (Klick löst kein Senden aus)
+function StepButton({ label, onClick }: { label: string; onClick: (e: React.MouseEvent) => void }) {
+  return (
+    <span
+      onClick={(e) => { e.stopPropagation(); onClick(e); }}
+      style={{
+        color: '#00cc66', border: '1px solid #1a4428', borderRadius: 2,
+        width: 22, height: 22, lineHeight: '20px', textAlign: 'center',
+        fontSize: 14, fontWeight: 'bold', cursor: 'pointer', flex: '0 0 auto',
+      }}
+    >
+      {label}
+    </span>
   );
 }
 

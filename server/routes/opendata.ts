@@ -1,0 +1,224 @@
+// Freie Datenbasis aus OurAirports (gemeinfrei): Flughäfen, Bahnen, VOR/NDB weltweit.
+// Die CSVs werden beim ersten Bedarf nach data/opendata/ geladen und alle 30 Tage erneuert.
+// ILS gibt es dort nicht: für längere Hartbelagbahnen wird ein Standard-ILS (3°) angenommen.
+import { Router } from 'express';
+import { existsSync, mkdirSync, statSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import NodeCache from 'node-cache';
+import type { Airport, Runway } from '../../src/types/airport';
+import type { Waypoint } from '../../src/types/navdata';
+
+const router = Router();
+const cache = new NodeCache({ stdTTL: 86400 });
+
+const DATA_DIR = process.env.OPENDATA_DIR ?? 'data/opendata';
+const BASE_URL = 'https://davidmegginson.github.io/ourairports-data';
+const FILES = ['airports', 'runways', 'navaids'] as const;
+const MAX_AGE_MS = 30 * 86400_000;
+const FT_TO_M = 0.3048;
+const NAVAID_RADIUS_NM = 50;
+const ILS_MIN_LENGTH_M = 1500;
+const MIN_LENGTH_M = 600; // kürzere Bahnen (Graspisten, Helipads) sind fürs Spiel irrelevant
+const HARD_SURFACE = /ASP|CON|PEM|BIT|TAR|PAV/i;
+
+type Row = Record<string, string>;
+interface OpenData {
+  airports: Map<string, Row>;
+  runways: Map<string, Row[]>;
+  navaids: Row[];
+}
+
+let data: OpenData | null = null;
+let loading: Promise<OpenData> | null = null;
+
+// ── CSV laden ────────────────────────────────────────────────────────────────
+async function ensureFile(name: string): Promise<string> {
+  const path = join(DATA_DIR, `${name}.csv`);
+  const fresh = existsSync(path) && Date.now() - statSync(path).mtimeMs < MAX_AGE_MS;
+  if (fresh) return readFileSync(path, 'utf8');
+  try {
+    const res = await fetch(`${BASE_URL}/${name}.csv`, { signal: AbortSignal.timeout(60_000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    mkdirSync(DATA_DIR, { recursive: true });
+    writeFileSync(path, text);
+    console.log(`opendata: ${name}.csv aktualisiert`);
+    return text;
+  } catch (err) {
+    // Download fehlgeschlagen → veraltete Datei ist besser als keine
+    if (existsSync(path)) return readFileSync(path, 'utf8');
+    throw err;
+  }
+}
+
+/** Minimaler CSV-Parser (RFC 4180: Anführungszeichen, "" als Escape, Kommas/Zeilenumbrüche in Feldern) */
+function parseCsv(text: string): Row[] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; } else quoted = false;
+      } else field += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') { row.push(field); field = ''; }
+    else if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+    else if (ch !== '\r') field += ch;
+  }
+  if (field || row.length) { row.push(field); rows.push(row); }
+  const [header, ...body] = rows;
+  return body.map((r) => Object.fromEntries(header.map((h, i) => [h, r[i] ?? ''])));
+}
+
+async function loadData(): Promise<OpenData> {
+  if (data) return data;
+  loading ??= (async () => {
+    const [airports, runways, navaids] = await Promise.all(FILES.map(async (f) => parseCsv(await ensureFile(f))));
+    const byIdent = new Map<string, Row>();
+    for (const a of airports) {
+      if (a.type === 'closed') continue;
+      for (const code of [a.icao_code, a.gps_code, a.ident]) {
+        if (code && !byIdent.has(code)) byIdent.set(code, a);
+      }
+    }
+    const rwyByAirport = new Map<string, Row[]>();
+    for (const r of runways) {
+      if (r.closed === '1') continue;
+      const list = rwyByAirport.get(r.airport_ident) ?? [];
+      list.push(r);
+      rwyByAirport.set(r.airport_ident, list);
+    }
+    data = { airports: byIdent, runways: rwyByAirport, navaids };
+    console.log(`opendata: ${byIdent.size} Flughäfen, ${runways.length} Bahnen, ${navaids.length} Navaids geladen`);
+    return data;
+  })();
+  try {
+    return await loading;
+  } finally {
+    loading = null;
+  }
+}
+
+// ── Mapping ──────────────────────────────────────────────────────────────────
+const num = (v: string | undefined): number | null => (v === undefined || v === '' ? null : Number(v));
+
+function distanceNM(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const rad = Math.PI / 180;
+  const a = Math.sin(((lat2 - lat1) * rad) / 2) ** 2
+    + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(((lng2 - lng1) * rad) / 2) ** 2;
+  return 2 * 3440.065 * Math.asin(Math.sqrt(a));
+}
+
+function bearing(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const rad = Math.PI / 180;
+  const y = Math.sin((lng2 - lng1) * rad) * Math.cos(lat2 * rad);
+  const x = Math.cos(lat1 * rad) * Math.sin(lat2 * rad)
+    - Math.sin(lat1 * rad) * Math.cos(lat2 * rad) * Math.cos((lng2 - lng1) * rad);
+  return ((Math.atan2(y, x) / rad) + 360) % 360;
+}
+
+function buildRunways(rows: Row[]): Runway[] {
+  const out: Runway[] = [];
+  for (const r of rows) {
+    const le = { id: r.le_ident, lat: num(r.le_latitude_deg), lng: num(r.le_longitude_deg), elev: num(r.le_elevation_ft), off: num(r.le_displaced_threshold_ft) };
+    const he = { id: r.he_ident, lat: num(r.he_latitude_deg), lng: num(r.he_longitude_deg), elev: num(r.he_elevation_ft), off: num(r.he_displaced_threshold_ft) };
+    // Ohne Koordinaten beider Enden lässt sich die Bahn nicht zeichnen
+    if (!le.id || !he.id || le.lat === null || le.lng === null || he.lat === null || he.lng === null) continue;
+
+    const lengthM = Math.round((num(r.length_ft) ?? distanceNM(le.lat, le.lng, he.lat, he.lng) * 6076) * FT_TO_M);
+    const widthM = Math.round((num(r.width_ft) ?? 148) * FT_TO_M);
+    if (lengthM < MIN_LENGTH_M) continue;
+    const withIls = lengthM >= ILS_MIN_LENGTH_M && HARD_SURFACE.test(r.surface);
+
+    for (const [a, b] of [[le, he], [he, le]] as const) {
+      const heading = Math.round(bearing(a.lat!, a.lng!, b.lat!, b.lng!) * 10) / 10;
+      const recipHeading = Math.round(((heading + 180) % 360) * 10) / 10;
+      out.push({
+        id: a.id,
+        recipId: b.id,
+        heading,
+        recipHeading,
+        thresholdLat: a.lat!,
+        thresholdLng: a.lng!,
+        endLat: b.lat!,
+        endLng: b.lng!,
+        lengthM,
+        widthM,
+        elevationFt: a.elev ?? 0,
+        ...(a.off ? { displacedThresholdM: Math.round(a.off * FT_TO_M) } : {}),
+        // Angenommenes ILS: OurAirports kennt keine ILS-Daten (Frequenz 0 = unbekannt)
+        ...(withIls ? { ils: { runway: a.id, localizerCourse: heading, glideslopeAngle: 3.0, frequencyMHz: 0, category: 'I' as const } } : {}),
+      });
+    }
+  }
+  return out;
+}
+
+function navaidType(type: string): Waypoint['type'] | null {
+  if (type.startsWith('VOR') || type === 'TACAN') return 'vor';
+  if (type.startsWith('NDB')) return 'ndb';
+  return null;
+}
+
+// ── Route ────────────────────────────────────────────────────────────────────
+router.get('/:icao', async (req, res) => {
+  const icao = req.params.icao.toUpperCase();
+  if (!/^[A-Z0-9]{3,4}$/.test(icao)) { res.status(400).json({ error: 'Ungültiger ICAO-Code' }); return; }
+
+  const cached = cache.get(icao);
+  if (cached) { res.json(cached); return; }
+
+  let d: OpenData;
+  try {
+    d = await loadData();
+  } catch (err) {
+    console.error('opendata: Laden fehlgeschlagen:', err);
+    res.status(503).json({ error: 'Freie Flughafendaten nicht verfügbar' });
+    return;
+  }
+
+  const ap = d.airports.get(icao);
+  const runways = ap ? buildRunways(d.runways.get(ap.ident) ?? []) : [];
+  if (!ap || runways.length === 0) { res.status(404).json({ error: `Flughafen ${icao} nicht gefunden` }); return; }
+
+  const lat = Number(ap.latitude_deg);
+  const lng = Number(ap.longitude_deg);
+  const waypoints: Waypoint[] = [];
+  let magVar: number | null = null;
+  let magDist = Infinity;
+  for (const n of d.navaids) {
+    const type = navaidType(n.type);
+    const nLat = num(n.latitude_deg);
+    const nLng = num(n.longitude_deg);
+    if (!type || nLat === null || nLng === null) continue;
+    const dist = distanceNM(lat, lng, nLat, nLng);
+    if (dist > NAVAID_RADIUS_NM) continue;
+    waypoints.push({ id: n.ident, name: `${n.ident} ${type.toUpperCase()}`, lat: nLat, lng: nLng, type });
+    // Missweisung vom nächstgelegenen Navaid übernehmen
+    const mv = num(n.magnetic_variation_deg);
+    if (mv !== null && dist < magDist) { magVar = mv; magDist = dist; }
+  }
+
+  const airport: Airport = {
+    icao,
+    name: ap.name,
+    lat,
+    lng,
+    elevationFt: num(ap.elevation_ft) ?? 0,
+    magneticVariation: Math.round((magVar ?? 0) * 10) / 10,
+    transitionAltitudeFt: ['US', 'CA'].includes(ap.iso_country) ? 18000 : 5000,
+    runways,
+  };
+
+  const body = { source: 'ourairports', airport, waypoints, stars: [] };
+  cache.set(icao, body);
+  res.json(body);
+});
+
+// Daten im Hintergrund vorladen, damit die erste Anfrage nicht warten muss
+loadData().catch((err) => console.warn('opendata: Vorladen fehlgeschlagen:', err.message));
+
+export default router;

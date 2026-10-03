@@ -427,9 +427,10 @@ export class RadarRenderer {
       ctx.textAlign = 'center';
       const labelOffset = Math.max(10, len * 0.1);
       const ux = dx / len, uy = dy / len;
-      ctx.fillText(rwy.id,     p2.x - ux * labelOffset, p2.y - uy * labelOffset + 4);
+      // Kennung steht an ihrer eigenen Schwelle (p1), die Gegenrichtung am anderen Ende (p2)
+      ctx.fillText(rwy.id,     p1.x + ux * labelOffset, p1.y + uy * labelOffset + 4);
       if (rwy.id !== rwy.recipId) {
-        ctx.fillText(rwy.recipId, p1.x + ux * labelOffset, p1.y + uy * labelOffset + 4);
+        ctx.fillText(rwy.recipId, p2.x - ux * labelOffset, p2.y - uy * labelOffset + 4);
       }
     }
   }
@@ -516,7 +517,9 @@ export class RadarRenderer {
     ctx.textAlign  = 'left';
     const lx = thr.x + Math.sin(toRad(appFrom)) * 14;
     const ly = thr.y - Math.cos(toRad(appFrom)) * 14;
-    ctx.fillText(`ILS ${rwy.id} ${rwy.ils.frequencyMHz.toFixed(2)} Cat${rwy.ils.category}`, lx, ly);
+    // Frequenz 0 = unbekannt (angenommenes ILS aus freien Daten)
+    const freq = rwy.ils.frequencyMHz > 0 ? ` ${rwy.ils.frequencyMHz.toFixed(2)}` : '';
+    ctx.fillText(`ILS ${rwy.id}${freq} Cat${rwy.ils.category}`, lx, ly);
   }
 
   // ── STAR routes ───────────────────────────────────────────────────────────
@@ -529,6 +532,7 @@ export class RadarRenderer {
     ctx.strokeStyle = 'rgba(180,120,255,0.45)';
     ctx.lineWidth = 1;
     ctx.setLineDash([6, 5]);
+    const labelled = new Set<string>();
     for (const star of stars) {
       const pts = star.waypoints;
       if (pts.length < 2) continue;
@@ -540,12 +544,15 @@ export class RadarRenderer {
         ctx.lineTo(p.x, p.y);
       }
       ctx.stroke();
-      // STAR id label at first waypoint
+      // STAR name label at first waypoint (once per name, runway variants share it)
+      const label = star.name ?? star.id;
+      if (labelled.has(label)) continue;
+      labelled.add(label);
       ctx.setLineDash([]);
       ctx.fillStyle = 'rgba(180,120,255,0.70)';
       ctx.font = '8px "Courier New"';
       ctx.textAlign = 'left';
-      ctx.fillText(star.id, first.x + 5, first.y - 4);
+      ctx.fillText(label, first.x + 5, first.y - 4);
       ctx.setLineDash([6, 5]);
     }
     ctx.restore();
@@ -770,6 +777,19 @@ export class RadarRenderer {
     const p = ll2c(ac.lat, ac.lng);
     if (p.x < -40 || p.x > W + 40 || p.y < -40 || p.y > H + 40) return;
 
+    // Direct-to-Linie zum Zielpunkt (nur ausgewählter Flieger)
+    if (selected && ac.directTo) {
+      const t = ll2c(ac.directTo.lat, ac.directTo.lng);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,220,80,0.6)';
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(t.x, t.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     let color = C.AC_GREEN;
     if (ac.conflict)     color = C.AC_RED;
     else if (ac.warning) color = C.AC_AMBER;
@@ -804,6 +824,14 @@ export class RadarRenderer {
       ctx.fillText(ac.callsign, p.x + 12, p.y - 4);
       ctx.fillText(`FL${fl.toString().padStart(3, '0')} ${vs}`, p.x + 12, p.y + 8);
       ctx.fillText(`${spd}kt`, p.x + 12, p.y + 20);
+      if (ac.clearedILS && ac.assignedRunway) {
+        // ILS zugewiesen → "ILS25L"; mit Landefreigabe "LND25L"; etabliert ohne Freigabe orange
+        const tag = `${ac.clearedToLand ? 'LND' : 'ILS'}${ac.assignedRunway}`;
+        const tagX = p.x + 12 + ctx.measureText(`${spd}kt `).width;
+        ctx.fillStyle = ac.clearedToLand ? '#00ff88' : ac.state === 'established' ? '#ffaa00' : '#4488ff';
+        ctx.fillText(tag, tagX, p.y + 20);
+        ctx.fillStyle = color;
+      }
 
       // Wake turbulence badge for Heavy / Super
       if (wake === 'H' || wake === 'J') {

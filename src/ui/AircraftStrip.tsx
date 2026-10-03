@@ -80,7 +80,11 @@ export function AircraftStrip({ aircraft, selectedId, onSelect }: Props) {
               )}
               <span>FL{fl.toString().padStart(3, '0')}</span>
               <span>{Math.round(ac.speedKts)}kt</span>
-              {ac.assignedRunway && <span style={{ color: '#4488ff' }}>RWY {ac.assignedRunway}</span>}
+              {ac.assignedRunway && (
+                <span style={{ color: ac.clearedToLand ? '#00ff88' : '#4488ff' }}>
+                  {ac.clearedToLand ? 'LND' : 'ILS'} {ac.assignedRunway}
+                </span>
+              )}
             </div>
           </div>
         );

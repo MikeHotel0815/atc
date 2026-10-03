@@ -2,8 +2,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { GameEngine, type GameState, type SessionData, type DisplayOptions } from '@/game/GameEngine';
 import { DEFAULT_DISPLAY } from '@/game/RadarRenderer';
-import { fetchAirportData, AVAILABLE_AIRPORTS } from '@/services/AirportDataService';
+import { fetchAirportData, AVAILABLE_AIRPORTS, type AirportSource, type SourcePreference } from '@/services/AirportDataService';
+import { fetchNavStatus } from '@/services/NavigraphService';
 import type { Airport } from '@/types/airport';
+import type { STAR, Waypoint } from '@/types/navdata';
 import type { ATCCommand, Aircraft } from '@/types/aircraft';
 import { RadarCanvas } from './RadarCanvas';
 import { AircraftStrip } from './AircraftStrip';
@@ -15,6 +17,24 @@ import { ContextMenu, type ContextMenuState } from './ContextMenu';
 const SIDEBAR_W = 288;
 const MOBILE_BREAKPOINT = 700;
 const RANGE_PRESETS = [10, 20, 40, 80, 120];
+const SOURCE_STORAGE = 'atc-data-source';
+const SOURCE_OPTIONS: Array<{ id: SourcePreference; label: string; title: string }> = [
+  { id: 'auto',    label: 'AUTO',  title: 'Beste verfügbare Quelle' },
+  { id: 'navdata', label: 'NAVIG', title: 'Navigraph AIRAC (privat)' },
+  { id: 'open',    label: 'OPEN',  title: 'OurAirports (frei)' },
+];
+const SOURCE_NAMES: Record<AirportSource, string> = {
+  navdata: 'Navigraph', open: 'OurAirports', generic: 'generisch',
+};
+
+function loadSourcePref(): SourcePreference {
+  try {
+    const v = localStorage.getItem(SOURCE_STORAGE);
+    return SOURCE_OPTIONS.some((o) => o.id === v) ? v as SourcePreference : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
 
 export function App() {
   const engineRef = useRef<GameEngine | null>(null);
@@ -28,8 +48,23 @@ export function App() {
     activeRunwayIds: [],
   });
   const [airport, setAirport] = useState<Airport | null>(null);
+  const [navPoints, setNavPoints] = useState<Waypoint[]>([]);
+  const [stars, setStars] = useState<STAR[]>([]);
   const [selectedIcao, setSelectedIcao] = useState(() => pendingSessionRef.current?.icao ?? 'EDDF');
   const [loading, setLoading] = useState(true);
+  const [icaoInput, setIcaoInput] = useState(selectedIcao);
+  const [icaoError, setIcaoError] = useState<string | null>(null);
+  const lastGoodIcaoRef = useRef<string | null>(null);
+  const [sourcePref, setSourcePref] = useState<SourcePreference>(loadSourcePref);
+  const [activeSource, setActiveSource] = useState<AirportSource | null>(null);
+  const [navAvailable, setNavAvailable] = useState(false);
+
+  useEffect(() => { fetchNavStatus().then(setNavAvailable); }, []);
+
+  const changeSourcePref = useCallback((pref: SourcePreference) => {
+    setSourcePref(pref);
+    try { localStorage.setItem(SOURCE_STORAGE, pref); } catch { /* nur Komfort */ }
+  }, []);
   const [isMobile, setIsMobile] = useState(window.innerWidth < MOBILE_BREAKPOINT);
   const [bottomOpen, setBottomOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -55,11 +90,23 @@ export function App() {
   useEffect(() => {
     selectedIcaoRef.current = selectedIcao;
     setLoading(true);
-    fetchAirportData(selectedIcao).then(({ airport: ap, waypoints: wps, stars }) => {
+    fetchAirportData(selectedIcao, sourcePref).then(({ airport: ap, waypoints: wps, stars: apStars, source }) => {
+      // Unbekannter Platz (weder Navigraph noch OurAirports) → beim bisherigen bleiben
+      if (source === 'generic' && lastGoodIcaoRef.current) {
+        setIcaoError(`${selectedIcao} nicht gefunden`);
+        setIcaoInput(lastGoodIcaoRef.current);
+        setSelectedIcao(lastGoodIcaoRef.current);
+        setLoading(false);
+        return;
+      }
+      lastGoodIcaoRef.current = selectedIcao;
+      setActiveSource(source);
       setAirport(ap);
+      setNavPoints(wps);
+      setStars(apStars);
       const engine = engineRef.current;
       if (!engine) return;
-      engine.setAirport(ap, wps, stars);
+      engine.setAirport(ap, wps, apStars);
       // Restore session after airport is set (so aircraft are in known airspace)
       if (pendingSessionRef.current) {
         engine.restoreSession(pendingSessionRef.current);
@@ -67,7 +114,7 @@ export function App() {
       }
       setLoading(false);
     });
-  }, [selectedIcao]);
+  }, [selectedIcao, sourcePref]);
 
   const handleCommand = useCallback((id: string, cmd: ATCCommand) => {
     engineRef.current?.applyCommand(id, cmd);
@@ -113,14 +160,61 @@ export function App() {
       {/* Airport selector */}
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
         <label style={{ color: '#446644', fontSize: 10, letterSpacing: 1, whiteSpace: 'nowrap' }}>AIRPORT</label>
-        <select
-          value={selectedIcao}
-          onChange={(e) => setSelectedIcao(e.target.value)}
-          style={{ background: '#0a1a0a', border: '1px solid #1a4428', color: '#00ff88', fontFamily: '"Courier New", monospace', fontSize: 12, padding: '3px 6px', flex: 1, outline: 'none' }}
-        >
-          {AVAILABLE_AIRPORTS.map((icao) => <option key={icao} value={icao}>{icao}</option>)}
-        </select>
+        {/* Freie ICAO-Eingabe (Navigraph-Daten), Vorschläge per Datalist */}
+        <input
+          value={icaoInput}
+          list="atc-airports"
+          maxLength={4}
+          spellCheck={false}
+          onChange={(e) => {
+            const v = e.target.value.toUpperCase();
+            setIcaoInput(v);
+            setIcaoError(null);
+            if (AVAILABLE_AIRPORTS.includes(v)) setSelectedIcao(v);
+          }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && /^[A-Z0-9]{4}$/.test(icaoInput)) setSelectedIcao(icaoInput); }}
+          onBlur={() => { if (/^[A-Z0-9]{4}$/.test(icaoInput)) setSelectedIcao(icaoInput); else setIcaoInput(selectedIcao); }}
+          style={{ background: '#0a1a0a', border: '1px solid #1a4428', color: '#00ff88', fontFamily: '"Courier New", monospace', fontSize: 12, padding: '3px 6px', flex: 1, minWidth: 0, outline: 'none', textTransform: 'uppercase' }}
+        />
+        <datalist id="atc-airports">
+          {AVAILABLE_AIRPORTS.map((icao) => <option key={icao} value={icao} />)}
+        </datalist>
         {loading && <span style={{ color: '#446644', fontSize: 10 }}>LOAD</span>}
+      </div>
+      {icaoError && <div style={{ color: '#ff4444', fontSize: 10 }}>{icaoError}</div>}
+
+      {/* Datenquelle */}
+      <div>
+        <div style={{ color: '#446644', fontSize: 10, letterSpacing: 1, marginBottom: 4, display: 'flex', justifyContent: 'space-between' }}>
+          <span>DATA</span>
+          {activeSource && (
+            <span style={{ color: sourcePref !== 'auto' && sourcePref !== activeSource ? '#ffaa00' : '#00ff88' }}>
+              {SOURCE_NAMES[activeSource]}
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 3 }}>
+          {SOURCE_OPTIONS.filter((o) => o.id !== 'navdata' || navAvailable).map((o) => (
+            <button
+              key={o.id}
+              title={o.title}
+              onClick={() => changeSourcePref(o.id)}
+              style={{
+                flex: 1,
+                background: sourcePref === o.id ? '#0a3020' : 'transparent',
+                border: `1px solid ${sourcePref === o.id ? '#00cc66' : '#1a4428'}`,
+                color: sourcePref === o.id ? '#00ff88' : '#446644',
+                fontFamily: '"Courier New", monospace',
+                fontSize: 11,
+                padding: '4px 2px',
+                cursor: 'pointer',
+                borderRadius: 2,
+              }}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Active landing runway */}
@@ -223,7 +317,7 @@ export function App() {
 
       {/* Commands */}
       <div style={{ color: '#446644', fontSize: 10, letterSpacing: 1 }}>COMMANDS</div>
-      <CommandPanel selected={selected} airport={airport} onCommand={handleCommand} />
+      <CommandPanel selected={selected} airport={airport} onCommand={handleCommand} activeRunwayIds={gameState.activeRunwayIds} />
 
       {/* Score / controls */}
       <ScorePanel
@@ -276,6 +370,8 @@ export function App() {
           onAltitudePreview={handleAltitudePreview}
           pendingCmdTypes={gameState.pendingCmdTypes[contextMenu.aircraft.id] ?? []}
           activeRunwayIds={gameState.activeRunwayIds}
+          waypoints={navPoints}
+          stars={stars}
         />
       )}
 
